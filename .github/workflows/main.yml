@@ -1,5 +1,5 @@
 # Workflow name
-name: ROM
+name: DUMP
 
 # Allows manual triggering from the GitHub Actions UI
 on:
@@ -9,9 +9,9 @@ on:
         description: 'Direct URL to the OTA ROM file (.zip)'
         required: true
       PARTITIONS:
-        description: 'Comma-separated list of partitions to dump (e.g., system,vendor,product)'
-        required: true
-        default: 'system,vendor,product'
+        description: 'Comma-separated partitions to dump. Leave empty to dump all.'
+        required: false
+        default: ''
       AUTH_KEY:
         description: 'Password to run the workflow'
         required: true
@@ -58,11 +58,17 @@ jobs:
           echo "Installing system packages..."
           sudo apt-get install -y --no-install-recommends \
             aria2 android-sdk-libsparse-utils p7zip-full python3-pip git autoconf libtool pkg-config \
-            uuid-dev liblz4-dev libselinux1-dev rsync
+            uuid-dev liblz4-dev libselinux1-dev rsync fuse3 libfuse3-dev rclone
           echo "Installing payload-dumper..."
           pip3 install git+https://github.com/5ec1cff/payload-dumper
 
-      # Step 3: Install erofs-utils from source
+      # Step 3: Set Vietnam Timezone
+      - name: Set Vietnam Timezone
+        run: |
+          echo "Setting Vietnam timezone"
+          sudo timedatectl set-timezone Asia/Ho_Chi_Minh
+
+      # Step 4: Install erofs-utils from source
       - name: Install erofs-utils
         run: |
           echo "Cloning and building erofs-utils..."
@@ -75,21 +81,21 @@ jobs:
           cd ..
           echo "erofs-utils installed."
 
-      # Step 4: Download the ROM file from the provided URL
+      # Step 5: Download the ROM file from the provided URL
       - name: Download ROM
         run: |
           echo "Downloading ROM from ${{ github.event.inputs.ROM_URL }}..."
           aria2c -x16 -s16 -j5 --file-allocation=none -o rom.zip "${{ github.event.inputs.ROM_URL }}"
           echo "Download complete."
 
-      # Step 5: Dump specified partitions from payload.bin
+      # Step 6: Dump specified partitions from payload.bin
       - name: Dump Partitions from payload.bin
         run: |
           echo "Dumping partitions: ${{ github.event.inputs.PARTITIONS }}"
           payload_dumper --out dumped_partitions --partitions "${{ github.event.inputs.PARTITIONS }}" rom.zip
           echo "Partitions dumped to 'dumped_partitions' directory."
 
-      # Step 6: Extract files from the partition image files (.img)
+      # Step 7: Extract files from the partition image files (.img)
       - name: Extract Files from Partition Images
         run: |
           mkdir -p extracted_files
@@ -98,32 +104,28 @@ jobs:
             partition_name=$(basename "$img_file" .img)
             echo "--- Processing $partition_name ---"
 
-            mkdir -p "extracted_files/$partition_name"
+            output_dir="extracted_files/$partition_name"
+            mkdir -p "$output_dir"
             
             # Convert sparse image to raw image if necessary
+            raw_image="dumped_partitions/$partition_name.raw"
             echo "Converting sparse image to raw for $partition_name..."
-            simg2img "$img_file" "dumped_partitions/$partition_name.raw" || {
+            simg2img "$img_file" "$raw_image" || {
               echo "$img_file is not a sparse image. Using original file."
-              cp "$img_file" "dumped_partitions/$partition_name.raw"
+              cp "$img_file" "$raw_image"
             }
 
-            # Mount the raw image using erofsfuse and copy files
-            mkdir -p mnt
-            echo "Attempting to mount $partition_name.raw with erofsfuse..."
-            if sudo erofsfuse "dumped_partitions/$partition_name.raw" mnt; then
-              echo "Mount successful. Copying files from $partition_name..."
-              # Use rsync for more efficient copying
-              sudo rsync -a mnt/ "extracted_files/$partition_name/"
-              sudo umount mnt
-              echo "Unmounted $partition_name."
+            # Extract files using the 'extract.erofs' utility
+            echo "Extracting files from $partition_name.raw using extract.erofs..."
+            if sudo extract.erofs -i "$raw_image" -o "$output_dir" -T0 -x; then
+              echo "Successfully extracted files from $partition_name."
             else
-              echo "Could not mount $partition_name.raw with erofsfuse. It might not be an EROFS filesystem."
+              echo "Failed to extract files from $partition_name.raw. It might not be an EROFS filesystem."
             fi
-            sudo rm -rf mnt
           done
           echo "File extraction complete."
 
-      # Step 7: Configure Rclone and upload the extracted folder to the cloud
+      # Step 8: Configure Rclone and upload the extracted folder to the cloud
       - name: Set up Rclone and Upload Folder
         env:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
