@@ -18,7 +18,7 @@ on:
 
 jobs:
   auth_check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     outputs:
       active: ${{ steps.check_key.outputs.active }}
     steps:
@@ -31,7 +31,7 @@ jobs:
     # This job depends on the success of the auth_check job
     needs: auth_check
     if: ${{ needs.auth_check.outputs.active == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       # Step 1: Clean up runner space using user-provided steps
       - name: Clean 1
