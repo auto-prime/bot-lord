@@ -58,7 +58,7 @@ jobs:
           echo "Installing system packages..."
           sudo apt-get install -y --no-install-recommends \
             aria2 android-sdk-libsparse-utils p7zip-full python3-pip git autoconf libtool pkg-config \
-            uuid-dev liblz4-dev libselinux1-dev rsync fuse3 libfuse3-dev rclone
+            uuid-dev liblz4-dev libselinux1-dev rsync fuse3 libfuse3-dev rclone bsdmainutils
           echo "Installing payload-dumper..."
           pip3 install git+https://github.com/5ec1cff/payload-dumper
 
@@ -115,12 +115,18 @@ jobs:
               cp "$img_file" "$raw_image"
             }
 
-            # Extract files using the 'extract.erofs' utility
-            echo "Extracting files from $partition_name.raw using extract.erofs..."
-            if sudo extract.erofs -i "$raw_image" -o "$output_dir" -T0 -x; then
-              echo "Successfully extracted files from $partition_name."
+            # Check for EROFS magic number (0xE0F5E1E2) at offset 1024
+            if [ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$raw_image")" = "e0f5e1e2" ]; then
+              echo "EROFS filesystem detected. Extracting files..."
+              # Use the full path to the executable to avoid PATH issues
+              if sudo /usr/local/bin/extract.erofs -i "$raw_image" -o "$output_dir" -T0 -x; then
+                echo "Successfully extracted files from $partition_name."
+              else
+                echo "An error occurred while extracting EROFS files from $partition_name.raw."
+              fi
             else
-              echo "Failed to extract files from $partition_name.raw. It might not be an EROFS filesystem."
+              echo "Skipping extraction for $partition_name.raw as it is not an EROFS filesystem. Copying the raw image instead."
+              cp "$raw_image" "$output_dir/"
             fi
           done
           echo "File extraction complete."
