@@ -1,0 +1,132 @@
+name: HIHI
+
+# Kích hoạt thủ công qua giao diện GitHub Actions
+on:
+  workflow_dispatch:
+    inputs:
+      ROM_URL:
+        description: 'URL trực tiếp tới file ROM OTA (.zip)'
+        required: true
+      PARTITIONS:
+        description: 'Danh sách các phân vùng cần dump, cách nhau bởi dấu phẩy (vd: system,vendor,product)'
+        required: true
+        default: 'system,vendor,product'
+      RCLONE_REMOTE:
+        description: 'Đường dẫn đích trên Rclone (vd: mydrive:myfolder/rom_dumps)'
+        required: true
+
+jobs:
+  dump_firmware:
+    runs-on: ubuntu-latest
+    steps:
+      # Bước 1: Tối ưu hóa không gian lưu trữ của runner
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 512
+          swap-size-mb: 1024
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+
+      # Bước 2: Cài đặt các gói phụ thuộc cần thiết
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          echo "Installing system packages..."
+          sudo apt-get install -y --no-install-recommends \
+            aria2 libsparse-utils p7zip-full python3-pip git autoconf libtool pkg-config \
+            libuuid1-dev liblz4-dev libselinux1-dev rsync
+          echo "Installing payload-dumper..."
+          pip3 install git+https://github.com/5ec1cff/payload-dumper
+
+      # Bước 3: Cài đặt erofs-utils từ mã nguồn
+      - name: Install erofs-utils
+        run: |
+          echo "Cloning and building erofs-utils..."
+          git clone https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git
+          cd erofs-utils
+          ./autogen.sh
+          ./configure
+          make
+          sudo make install
+          cd ..
+          echo "erofs-utils installed."
+
+      # Bước 4: Tải về file ROM từ URL được cung cấp
+      - name: Download ROM
+        run: |
+          echo "Downloading ROM from ${{ github.event.inputs.ROM_URL }}..."
+          aria2c -x16 -s16 -j5 --file-allocation=none -o rom.zip "${{ github.event.inputs.ROM_URL }}"
+          echo "Download complete."
+
+      # Bước 5: Trích xuất các phân vùng từ payload.bin bằng payload-dumper
+      - name: Dump Partitions from payload.bin
+        run: |
+          echo "Dumping partitions: ${{ github.event.inputs.PARTITIONS }}"
+          payload_dumper --out dumped_partitions --partitions "${{ github.event.inputs.PARTITIONS }}" rom.zip
+          echo "Partitions dumped to 'dumped_partitions' directory."
+
+      # Bước 6: Giải nén file từ các file ảnh (.img) của phân vùng
+      - name: Extract Files from Partition Images
+        run: |
+          mkdir -p extracted_files
+          echo "Starting extraction from partition images..."
+          for img_file in dumped_partitions/*.img; do
+            partition_name=$(basename "$img_file" .img)
+            echo "--- Processing $partition_name ---"
+
+            mkdir -p "extracted_files/$partition_name"
+            
+            # Chuyển đổi sparse image sang raw image (nếu cần)
+            echo "Converting sparse image to raw for $partition_name..."
+            simg2img "$img_file" "dumped_partitions/$partition_name.raw" || {
+              echo "$img_file is not a sparse image. Using original file."
+              cp "$img_file" "dumped_partitions/$partition_name.raw"
+            }
+
+            # Mount ảnh raw bằng erofsfuse và sao chép file
+            mkdir -p mnt
+            echo "Attempting to mount $partition_name.raw with erofsfuse..."
+            if sudo erofsfuse "dumped_partitions/$partition_name.raw" mnt; then
+              echo "Mount successful. Copying files from $partition_name..."
+              # Dùng rsync để sao chép hiệu quả hơn
+              sudo rsync -a mnt/ "extracted_files/$partition_name/"
+              sudo umount mnt
+              echo "Unmounted $partition_name."
+            else
+              echo "Could not mount $partition_name.raw with erofsfuse. It might not be an EROFS filesystem."
+            fi
+            sudo rm -rf mnt
+          done
+          echo "File extraction complete."
+
+      # Bước 7: Chuẩn bị file nén để tải lên
+      - name: Prepare Files for Upload
+        run: |
+          echo "Archiving extracted files..."
+          ROM_FILENAME=$(basename "${{ github.event.inputs.ROM_URL }}")
+          # Tạo tên file nén sạch hơn
+          ARCHIVE_NAME=$(echo "$ROM_FILENAME" | sed 's/\.zip$//')-FIRMWARE.7z
+          # Đóng gói thư mục extracted_files
+          7z a "$ARCHIVE_NAME" ./extracted_files/
+          echo "Created archive: $ARCHIVE_NAME"
+          echo "ARCHIVE_NAME=$ARCHIVE_NAME" >> $GITHUB_ENV
+
+      # Bước 8: Cấu hình Rclone và tải file lên cloud
+      - name: Set up Rclone and Upload
+        env:
+          # Cần tạo một secret trong repo GitHub tên là RCLONE_CONF
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        run: |
+          if [ -z "$RCLONE_CONF" ]; then
+            echo "RCLONE_CONF secret is not set. Skipping upload."
+            exit 0
+          fi
+          echo "Setting up Rclone..."
+          mkdir -p ~/.config/rclone
+          echo "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+          
+          echo "Uploading ${{ env.ARCHIVE_NAME }} to ${{ github.event.inputs.RCLONE_REMOTE }}..."
+          rclone copy "${{ env.ARCHIVE_NAME }}" "${{ github.event.inputs.RCLONE_REMOTE }}" -P --drive-chunk-size 64M
+          echo "Upload complete."
