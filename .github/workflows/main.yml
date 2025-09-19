@@ -51,14 +51,13 @@ jobs:
           remove-android: "true"
           remove-haskell: "true"
 
-      # Step 2: Install necessary dependencies
+      # Step 2: Install necessary dependencies (including erofs-utils)
       - name: Install Dependencies
         run: |
           sudo apt-get update
           echo "Installing system packages..."
           sudo apt-get install -y --no-install-recommends \
-            aria2 android-sdk-libsparse-utils p7zip-full python3-pip git autoconf libtool pkg-config \
-            uuid-dev liblz4-dev libselinux1-dev rsync fuse3 libfuse3-dev rclone bsdmainutils
+            aria2 android-sdk-libsparse-utils p7zip-full python3-pip git rclone bsdmainutils erofs-utils
           echo "Installing payload-dumper..."
           pip3 install git+https://github.com/5ec1cff/payload-dumper
 
@@ -68,34 +67,21 @@ jobs:
           echo "Setting Vietnam timezone"
           sudo timedatectl set-timezone Asia/Ho_Chi_Minh
 
-      # Step 4: Install erofs-utils from source
-      - name: Install erofs-utils
-        run: |
-          echo "Cloning and building erofs-utils..."
-          git clone https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git
-          cd erofs-utils
-          ./autogen.sh
-          ./configure
-          make
-          sudo make install
-          cd ..
-          echo "erofs-utils installed."
-
-      # Step 5: Download the ROM file from the provided URL
+      # Step 4: Download the ROM file from the provided URL
       - name: Download ROM
         run: |
           echo "Downloading ROM from ${{ github.event.inputs.ROM_URL }}..."
           aria2c -x16 -s16 -j5 --file-allocation=none -o rom.zip "${{ github.event.inputs.ROM_URL }}"
           echo "Download complete."
 
-      # Step 6: Dump specified partitions from payload.bin
+      # Step 5: Dump specified partitions from payload.bin
       - name: Dump Partitions from payload.bin
         run: |
           echo "Dumping partitions: ${{ github.event.inputs.PARTITIONS }}"
           payload_dumper --out dumped_partitions --partitions "${{ github.event.inputs.PARTITIONS }}" rom.zip
           echo "Partitions dumped to 'dumped_partitions' directory."
 
-      # Step 7: Extract files from the partition image files (.img)
+      # Step 6: Extract files from the partition image files (.img)
       - name: Extract Files from Partition Images
         run: |
           mkdir -p extracted_files
@@ -118,8 +104,7 @@ jobs:
             # Check for EROFS magic number (0xE0F5E1E2) at offset 1024
             if [ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$raw_image")" = "e0f5e1e2" ]; then
               echo "EROFS filesystem detected. Extracting files..."
-              # Use the full path to the executable to avoid PATH issues
-              if sudo /usr/local/bin/extract.erofs -i "$raw_image" -o "$output_dir" -T0 -x; then
+              if sudo extract.erofs -i "$raw_image" -o "$output_dir" -T0 -x; then
                 echo "Successfully extracted files from $partition_name."
               else
                 echo "An error occurred while extracting EROFS files from $partition_name.raw."
@@ -131,7 +116,7 @@ jobs:
           done
           echo "File extraction complete."
 
-      # Step 8: Configure Rclone and upload the extracted folder to the cloud
+      # Step 7: Configure Rclone and upload the extracted folder to the cloud
       - name: Set up Rclone and Upload Folder
         env:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
