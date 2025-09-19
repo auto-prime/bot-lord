@@ -1,4 +1,5 @@
-name: HIHI
+# Tên của GitHub Action
+name: Hi
 
 # Kích hoạt thủ công qua giao diện GitHub Actions
 on:
@@ -14,9 +15,25 @@ on:
       RCLONE_REMOTE:
         description: 'Đường dẫn đích trên Rclone (vd: mydrive:myfolder/rom_dumps)'
         required: true
+      AUTH_KEY:
+        description: 'Mật khẩu để chạy workflow'
+        required: true
 
 jobs:
+  auth_check:
+    runs-on: ubuntu-latest
+    outputs:
+      active: ${{ steps.check_key.outputs.active }}
+    steps:
+      - name: Check Authentication Key
+        id: check_key
+        # So sánh key người dùng nhập với secret đã lưu trong repo
+        run: echo "active=${{ github.event.inputs.AUTH_KEY == secrets.WORKFLOW_AUTH_KEY }}" >> $GITHUB_OUTPUT
+
   dump_firmware:
+    # Job này phụ thuộc và chỉ chạy khi job auth_check thành công
+    needs: auth_check
+    if: ${{ needs.auth_check.outputs.active == 'true' }}
     runs-on: ubuntu-latest
     steps:
       # Bước 1: Tối ưu hóa không gian lưu trữ của runner
@@ -29,14 +46,14 @@ jobs:
           remove-android: 'true'
           remove-haskell: 'true'
 
-      # Bước 2: Cài đặt các gói phụ thuộc cần thiết
+      # Bước 2: Cài đặt các gói phụ thuộc cần thiết (ĐÃ SỬA LỖI)
       - name: Install Dependencies
         run: |
           sudo apt-get update
           echo "Installing system packages..."
           sudo apt-get install -y --no-install-recommends \
-            aria2 libsparse-utils p7zip-full python3-pip git autoconf libtool pkg-config \
-            libuuid1-dev liblz4-dev libselinux1-dev rsync
+            aria2 android-sdk-libsparse-utils p7zip-full python3-pip git autoconf libtool pkg-config \
+            uuid-dev liblz4-dev libselinux1-dev rsync
           echo "Installing payload-dumper..."
           pip3 install git+https://github.com/5ec1cff/payload-dumper
 
@@ -130,3 +147,4 @@ jobs:
           echo "Uploading ${{ env.ARCHIVE_NAME }} to ${{ github.event.inputs.RCLONE_REMOTE }}..."
           rclone copy "${{ env.ARCHIVE_NAME }}" "${{ github.event.inputs.RCLONE_REMOTE }}" -P --drive-chunk-size 64M
           echo "Upload complete."
+
