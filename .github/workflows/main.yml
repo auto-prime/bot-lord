@@ -1,5 +1,5 @@
 # Workflow name
-name: DUMP
+name: ROM
 
 # Allows manual triggering from the GitHub Actions UI
 on:
@@ -12,9 +12,6 @@ on:
         description: 'Comma-separated list of partitions to dump (e.g., system,vendor,product)'
         required: true
         default: 'system,vendor,product'
-      RCLONE_REMOTE:
-        description: 'Rclone destination path (e.g., mydrive:myfolder/rom_dumps)'
-        required: true
       AUTH_KEY:
         description: 'Password to run the workflow'
         required: true
@@ -36,24 +33,23 @@ jobs:
     if: ${{ needs.auth_check.outputs.active == 'true' }}
     runs-on: ubuntu-latest
     steps:
-        
-        # Step 1: CLEAN
-       - name: Clean 1
-         run: |
-            docker rmi `docker images -q` || true
-            sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/sudo apt/sources.list.d || true
-            sudo apt -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* mysql* php* || true
-            sudo apt -y autoremove --purge || true
-            sudo apt -y autoclean || true
-            sudo apt clean || true
-       - name: Clean 2
-         uses: easimon/maximize-build-space@master
-         with:
-            root-reserve-mb: 512
-            swap-size-mb: 1024
-            remove-dotnet: "true"
-            remove-android: "true"
-            remove-haskell: "true"
+      # Step 1: Clean up runner space using user-provided steps
+      - name: Clean 1
+        run: |
+          docker rmi `docker images -q` || true
+          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/sudo apt/sources.list.d || true
+          sudo apt -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* mysql* php* || true
+          sudo apt -y autoremove --purge || true
+          sudo apt -y autoclean || true
+          sudo apt clean || true
+      - name: Clean 2
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 512
+          swap-size-mb: 1024
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
 
       # Step 2: Install necessary dependencies
       - name: Install Dependencies
@@ -130,22 +126,26 @@ jobs:
       # Step 7: Configure Rclone and upload the extracted folder to the cloud
       - name: Set up Rclone and Upload Folder
         env:
-          # A secret named RCLONE_CONF must be created in the GitHub repository settings
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+          # The base path for your cloud remote (e.g., 'gdrive:my_folder')
+          RCLONE_DESTINATION: ${{ secrets.RCLONE_DESTINATION }}
         run: |
-          if [ -z "$RCLONE_CONF" ]; then
-            echo "RCLONE_CONF secret is not set. Skipping upload."
+          if [ -z "$RCLONE_CONF" ] || [ -z "$RCLONE_DESTINATION" ]; then
+            echo "RCLONE_CONF or RCLONE_DESTINATION secret is not set. Skipping upload."
             exit 0
           fi
           echo "Setting up Rclone..."
           mkdir -p ~/.config/rclone
           echo "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
           
-          # Create a remote folder name based on the ROM filename
+          # Create a remote folder name based on the downloaded ROM filename
           ROM_FILENAME=$(basename "${{ github.event.inputs.ROM_URL }}")
-          REMOTE_FOLDER_NAME=$(echo "$ROM_FILENAME" | sed 's/\.zip$//')-FIRMWARE
+          REMOTE_FOLDER_NAME=$(echo "$ROM_FILENAME" | sed 's/\.zip$//')
           
-          echo "Uploading 'extracted_files' folder to ${{ github.event.inputs.RCLONE_REMOTE }}/$REMOTE_FOLDER_NAME..."
-          rclone copy ./extracted_files/ "${{ github.event.inputs.RCLONE_REMOTE }}/$REMOTE_FOLDER_NAME" -P --drive-chunk-size 64M --transfers 16
+          # Construct the final destination path
+          FINAL_DESTINATION="${RCLONE_DESTINATION}/Rom/${REMOTE_FOLDER_NAME}"
+          
+          echo "Uploading 'extracted_files' folder to ${FINAL_DESTINATION}..."
+          rclone copy ./extracted_files/ "${FINAL_DESTINATION}" -P --drive-chunk-size 64M --transfers 16
           echo "Upload complete."
 
