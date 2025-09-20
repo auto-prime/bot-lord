@@ -71,7 +71,7 @@ jobs:
           python3 -m venv venv
           . venv/bin/activate
           pip install --upgrade pip wheel
-          pip install git+https://github.com/vm03/payload_dumper.git
+          pip install git+https://github.com/5ec1cff/payload-dumper.git
 
       - name: Prepare workspace
         run: |
