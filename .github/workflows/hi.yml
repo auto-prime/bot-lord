@@ -120,7 +120,7 @@ jobs:
         run: |
           set -euo pipefail
           bash -c "$(cat <<'EOF'
-          #!/usr/-bin/env bash
+          #!/bin/bash
           set -euo pipefail
 
           OUT_IMG_DIR="out_imgs"
@@ -131,7 +131,7 @@ jobs:
           is_erofs() { [[ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$1" 2>/dev/null || true)" == "e0f5e1e2" ]]; }
           safe_umount() {
             local mp="$1"
-            if mountpoint -q "$mp"; then sudo umount "$mp" || true; fi
+            if mountpoint -q "$mp"; then sudo umount -l "$mp" || true; fi
           }
           cleanup() {
             for d in "$MOUNT_ROOT"/*; do [[ -d "$d" ]] && safe_umount "$d"; done
@@ -157,21 +157,26 @@ jobs:
             mkdir -p "$DEST_PART_DIR"
 
             if is_erofs "$IMG"; then
+              echo "    -> EROFS detected, using extract.erofs"
               EXDIR="$MOUNT_ROOT/${PART}_erofs_dump"
               mkdir -p "$EXDIR"
               extract.erofs -i "$IMG" -x -o "$EXDIR"
-              rsync -a -m --include='**/*.apk' --include='*/' --exclude='*' "$EXDIR/" "$DEST_PART_DIR/"
+              sudo rsync -a -m --include='**/*.apk' --include='*/' --exclude='*' "$EXDIR/" "$DEST_PART_DIR/"
               rm -rf "$EXDIR"
-            else
+            elif file -b "$IMG" | grep -qi "ext4 filesystem data"; then
+              echo "    -> ext4 detected, attempting to mount..."
               MP="$MOUNT_ROOT/$PART"
               mkdir -p "$MP"
               if ! sudo mount -o ro,loop "$IMG" "$MP"; then
+                echo "    ! Mount failed for ext4 image, skipping."
                 rmdir "$MP" || true
                 continue
               fi
-              rsync -a -m --include='**/*.apk' --include='*/' --exclude='*' "$MP/" "$DEST_PART_DIR/"
+              sudo rsync -a -m --include='**/*.apk' --include='*/' --exclude='*' "$MP/" "$DEST_PART_DIR/"
               safe_umount "$MP"
               rmdir "$MP" || true
+            else
+              echo "    -> Partition is not EROFS or ext4, skipping."
             fi
           done
           shopt -u nullglob
