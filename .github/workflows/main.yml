@@ -94,7 +94,7 @@ jobs:
           }
 
           # Directly define and check for the tool's standard path
-          EXTRACT_EROFS=extract.erofs"
+          EXTRACT_EROFS="extract.erofs"
           if ! [ -x "${EXTRACT_EROFS}" ]; then
             echo "WARNING: extract.erofs not found at ${EXTRACT_EROFS}. EROFS partitions will not be extracted."
             EXTRACT_EROFS="" # Clear the variable to trigger fallback copy
