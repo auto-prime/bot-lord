@@ -1,4 +1,4 @@
-name: APK
+name: HIon APK Extractor
 
 on:
   workflow_dispatch:
@@ -59,6 +59,7 @@ jobs:
 
       - name: Install dependencies
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             aria2 unzip curl file rsync jq \
@@ -72,16 +73,13 @@ jobs:
           python3 -m venv venv
           . venv/bin/activate
           pip install --upgrade pip wheel
-          pip install git+https://github.com/5ec1cff/payload-dumper.git \
+          pip install git+https://github.com/5ec1cff/payload_dumper.git \
                       brotli zstandard pycryptodome tqdm
 
       - name: Prepare workspace
         run: |
-          echo "Preparing workspace and mount point..."
-          sudo mkdir -p /mnt/payload_mounts
-          sudo chown $USER:$USER /mnt/payload_mounts
+          sudo mkdir -p /mnt/payload_mounts && sudo chown $USER:$USER /mnt/payload_mounts
           mkdir -p work out_imgs out_apks
-          echo "Workspace ready."
 
       - name: Download ROM / payload.bin
         working-directory: work
@@ -102,7 +100,7 @@ jobs:
           set -euo pipefail
           . venv/bin/activate
           
-          # Use the hardcoded list of partitions provided by the user
+          # Use the hardcoded list of partitions as requested
           PARTITIONS_TO_DUMP="my_bigball,my_carrier,my_engineering,my_heytap,my_manifest,my_product,my_region,my_company,my_stock,my_preload,odm,product,system,system_ext,vendor"
           echo "[*] Dumping partitions from hardcoded list: $PARTITIONS_TO_DUMP"
           python3 -m payload_dumper --out out_imgs --partitions "$PARTITIONS_TO_DUMP" work/payload.bin
@@ -113,22 +111,25 @@ jobs:
       - name: Extract APKs
         id: extract
         run: |
-          # The logic for reading dump_partition_list.txt has been removed.
-          # The script below now uses a hardcoded list directly.
+          echo "[*] Checking for partition images..."
+          if ! ls out_imgs/*.img 1> /dev/null 2>&1; then
+            echo "-> No .img files found to process. Skipping APK extraction."
+            echo "total_apks=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "-> Partition images found. Starting extraction process."
+
           bash -c "$(cat <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
           OUT_IMG_DIR="out_imgs"; OUT_APK_DIR="out_apks"; MOUNT_ROOT="/mnt/payload_mounts"; APK_SUBDIRS=("app" "priv-app")
-          
-          # Use the new hardcoded list of partitions
-          CANDIDATE_PARTS=("my_bigball" "my_carrier" "my_engineering" "my_heytap" "my_manifest" "my_product" "my_region" "my_company" "my_stock" "my_preload" "odm" "product" "system" "system_ext" "vendor")
-
           is_sparse() { file -b "$1" 2>/dev/null | grep -qi "Android sparse image"; }; is_erofs() { [[ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$1" 2>/dev/null || true)" == "e0f5e1e2" ]]; }
           safe_umount() { if mountpoint -q "$1"; then sudo umount "$1" || true; fi; }; cleanup() { for d in "$MOUNT_ROOT"/*; do [[ -d "$d" ]] && safe_umount "$d"; done; }; trap cleanup EXIT
           shopt -s nullglob; for IMG in "$OUT_IMG_DIR"/*.img; do if is_sparse "$IMG"; then RAW="${IMG%.img}.raw.img"; simg2img "$IMG" "$RAW" && mv -f "$RAW" "$IMG"; fi; done; shopt -u nullglob
-          declare -A a_want_part=(); for p in "${CANDIDATE_PARTS[@]}"; do a_want_part["$p"]=1; done
+          
+          # This script will now process ALL .img files found in the output directory
           shopt -s nullglob; for IMG in "$OUT_IMG_DIR"/*.img; do
-            PART="$(basename "$IMG" .img)"; [[ -v a_want_part[$PART] ]] || { continue; }; echo "--- Processing: [$PART] ---"; DEST_PART_DIR="$OUT_APK_DIR/$PART"
+            PART="$(basename "$IMG" .img)"; echo "--- Processing: [$PART] ---"; DEST_PART_DIR="$OUT_APK_DIR/$PART"
             scan_and_copy_apks() {
               local search_root="$1"; for SUBDIR in "${APK_SUBDIRS[@]}"; do
                 find "$search_root" -type d -name "$SUBDIR" -print0 2>/dev/null | while IFS= read -r -d '' SRC_DIR; do
@@ -136,30 +137,12 @@ jobs:
                 done; done
             }
             if is_erofs "$IMG"; then
-              echo "    -> EROFS filesystem detected."
-              if ! command -v extract.erofs &> /dev/null; then
-                  echo "    -> FATAL: 'extract.erofs' command not found, but is required for this partition."
-                  echo "    -> Please check if the 'erofs-utils' package was installed correctly."
-                  exit 1
-              fi
-              EXDIR="$MOUNT_ROOT/${PART}_erofs_dump"
-              mkdir -p "$EXDIR"
-              echo "    -> Extracting with extract.erofs..."
-              extract.erofs -i "$IMG" -x -o "$EXDIR"
-              scan_and_copy_apks "$EXDIR"
-              rm -rf "$EXDIR"
+              echo "    -> EROFS detected."; EXDIR="$MOUNT_ROOT/${PART}_erofs_dump"; mkdir -p "$EXDIR"
+              extract.erofs -i "$IMG" -x -o "$EXDIR"; scan_and_copy_apks "$EXDIR"; rm -rf "$EXDIR"
             else
-              echo "    -> ext4/raw filesystem detected. Mounting..."
-              MP="$MOUNT_ROOT/$PART"
-              mkdir -p "$MP"
-              if ! sudo mount -o ro,loop "$IMG" "$MP"; then
-                  echo "    -> Mount failed (likely not a data partition). Skipping."
-                  rmdir "$MP" || true
-                  continue
-              fi
-              scan_and_copy_apks "$MP"
-              safe_umount "$MP"
-              rmdir "$MP" || true
+              echo "    -> ext4/raw detected."; MP="$MOUNT_ROOT/$PART"; mkdir -p "$MP"
+              if ! sudo mount -o ro,loop "$IMG" "$MP"; then rmdir "$MP" || true; continue; fi
+              scan_and_copy_apks "$MP"; safe_umount "$MP"; rmdir "$MP" || true
             fi
           done; shopt -u nullglob
           EOF
