@@ -48,7 +48,7 @@ jobs:
           # Install build dependencies for erofs-utils and other tools
           sudo apt-get install -y --no-install-recommends \
             aria2 android-sdk-libsparse-utils p7zip-full python3-pip git rclone bsdmainutils \
-            liblz4-dev uuid-dev pkg-config make gcc
+            liblz4-dev uuid-dev pkg-config make gcc autoconf automake libtool
 
           # Install payload-dumper
           pip3 install --no-cache-dir git+https://github.com/5ec1cff/payload-dumper
@@ -57,6 +57,8 @@ jobs:
           echo "Cloning and building erofs-utils from source..."
           git clone https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git
           cd erofs-utils
+          ./autogen.sh
+          ./configure
           make
           sudo make install
           echo "erofs-utils installed successfully."
