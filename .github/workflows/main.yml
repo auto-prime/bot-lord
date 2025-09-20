@@ -50,6 +50,8 @@ jobs:
             aria2 android-sdk-libsparse-utils p7zip-full python3-pip git rclone bsdmainutils erofs-utils
           echo "Installing payload-dumper..."
           pip3 install git+https://github.com/5ec1cff/payload-dumper
+          # FIX: Find the absolute path of extract.erofs and save it to the environment
+          echo "EROFS_EXTRACT_PATH=$(which extract.erofs)" >> $GITHUB_ENV
 
       # Step 3: Set Vietnam Timezone
       - name: Set Vietnam Timezone
@@ -71,7 +73,7 @@ jobs:
           payload_dumper --out dumped_partitions --partitions "${{ github.event.inputs.PARTITIONS }}" rom.zip
           echo "Partitions dumped to 'dumped_partitions' directory."
 
-      # Step 6: Extract files from partition images
+      # Step 6: Extract files from partition images (simg2img conversion removed)
       - name: Extract Files from Partition Images
         run: |
           mkdir -p extracted_files
@@ -80,24 +82,17 @@ jobs:
             partition_name=$(basename "$img_file" .img)
             echo "--- Processing $partition_name ---"
             
-            raw_image="dumped_partitions/$partition_name.raw"
-            echo "Converting sparse image to raw for $partition_name..."
-            simg2img "$img_file" "$raw_image" || {
-              echo "$img_file is not a sparse image. Using original file."
-              cp "$img_file" "$raw_image"
-            }
-            
-            # Check for EROFS magic number and extract files
-            if [ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$raw_image")" = "e0f5e1e2" ]; then
-              echo "EROFS filesystem detected. Extracting files to 'extracted_files' directory..."
-              if extract.erofs -i "$raw_image" -o extracted_files/ -T0 -x; then
+            # Check for EROFS magic number and extract files directly from the .img file
+            if [ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$img_file")" = "e0f5e1e2" ]; then
+              echo "EROFS filesystem detected. Extracting files with full path: ${{ env.EROFS_EXTRACT_PATH }}"
+              if ${{ env.EROFS_EXTRACT_PATH }} -i "$img_file" -o extracted_files/ -T0 -x; then
                 echo "Successfully extracted files from $partition_name."
               else
-                echo "An error occurred while extracting EROFS files from $partition_name.raw."
+                echo "An error occurred while extracting EROFS files from $partition_name.img."
               fi
             else
-              echo "Skipping extraction for $partition_name.raw as it is not an EROFS filesystem. Copying the raw image instead."
-              cp "$raw_image" "extracted_files/${partition_name}.raw"
+              echo "Skipping extraction for $partition_name.img as it is not an EROFS filesystem. Copying the image instead."
+              cp "$img_file" "extracted_files/${partition_name}.img"
             fi
           done
           echo "File extraction complete."
@@ -129,13 +124,14 @@ jobs:
           rclone copy ./extracted_files/ "${FINAL_DESTINATION}" -P --drive-chunk-size 64M --transfers 16
           echo "Upload complete."
 
-      # Step 8: Generate Public Link
-      - name: Generate Public Link
+      # Step 8: Generate and Mask Public Link
+      - name: Generate and Mask Public Link
         id: generate_link
         if: steps.rclone_upload.outcome == 'success'
         run: |
           PUBLIC_LINK=$(rclone link "${{ steps.rclone_upload.outputs.FINAL_DESTINATION }}")
-          echo "Public link: $PUBLIC_LINK"
+          # Mask the public link so it doesn't appear in logs
+          echo "::add-mask::$PUBLIC_LINK"
           echo "PUBLIC_LINK=$PUBLIC_LINK" >> $GITHUB_OUTPUT
           
       # Step 9: Send Telegram Notification
