@@ -58,9 +58,10 @@ jobs:
           git clone https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git
           cd erofs-utils
           ./autogen.sh
-          ./configure
+          ./configure --prefix=/usr/local
           make
           sudo make install
+          sudo ldconfig
           echo "erofs-utils installed successfully."
 
       # 3) Set timezone
