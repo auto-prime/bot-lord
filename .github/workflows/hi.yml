@@ -77,8 +77,8 @@ jobs:
           python3 -m venv venv
           . venv/bin/activate
           pip install --upgrade pip wheel
-          pip install git+https://github.com/vm03/payload_dumper.git \
-                      brotli zstandard pycryptodome tqdm
+          pip install git+https://github.com/5ec1cff/payload-dumper.git \
+            brotli zstandard pycryptodome tqdm
 
       - name: Prepare workspace
         run: mkdir -p work out_imgs out_apks /mnt/payload_mounts
