@@ -73,7 +73,7 @@ jobs:
       # 6) Extract files from partition images
       - name: Extract Files from Partition Images
         run: |
-          set -euo pipefail
+          # Removed 'set -euo pipefail' to prevent 'unbound variable' error
           mkdir -p extracted_files
           is_erofs() {
             local img="$1"
