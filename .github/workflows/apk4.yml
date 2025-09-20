@@ -57,29 +57,29 @@ jobs:
             echo "has_rclone=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install dependencies and build tools
+      - name: Install dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
-          # Add libfuse3-dev, the missing dependency for building erofs-utils' fuse components
           sudo apt-get install -y --no-install-recommends \
             aria2 unzip curl file rsync jq \
-            android-sdk-libsparse-utils e2fsprogs util-linux fuse3 libfuse3-dev \
-            python3 python3-venv python3-pip git \
-            liblz4-dev uuid-dev make gcc pkg-config autoconf
+            android-sdk-libsparse-utils e2fsprogs util-linux fuse3 \
+            python3 python3-venv python3-pip git
 
-      - name: Build and install erofs-utils from source
+      - name: Download and install static erofs-utils
         run: |
           set -euo pipefail
-          echo "[*] Building erofs-utils from source for maximum reliability..."
-          git clone https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git
-          cd erofs-utils
-          ./autogen.sh
-          # FIX: Explicitly enable FUSE support to ensure the necessary tools are built
-          ./configure --prefix=/usr --enable-fuse
-          make -j$(nproc)
-          sudo make install
-          echo "[✓] erofs-utils build process completed."
+          echo "[*] Downloading static erofs-utils binaries..."
+          EROFSTOOLS_URL="https://github.com/NusantaraBuilds/erofs-utils-static/releases/download/v1.4/erofs-utils-v1.4-linux-x86_64.zip"
+          curl -s -L -o erofs-utils.zip "$EROFSTOOLS_URL"
+          unzip -o erofs-utils.zip
+          sudo mv erofs-utils/extract.erofs /usr/local/bin/
+          sudo mv erofs-utils/erofsfuse /usr/local/bin/
+          sudo chmod +x /usr/local/bin/extract.erofs /usr/local/bin/erofsfuse
+          echo "[✓] Static erofs-utils installed."
+          # Verify that the commands are available
+          command -v extract.erofs
+          command -v erofsfuse
 
       - name: Setup Python venv + payload-dumper
         run: |
