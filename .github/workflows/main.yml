@@ -62,7 +62,6 @@ jobs:
           make
           sudo make install
           sudo ldconfig
-          echo "/usr/local/bin" >> $GITHUB_PATH
           echo "erofs-utils installed successfully."
 
       # 3) Set timezone
@@ -104,16 +103,16 @@ jobs:
             
             if is_erofs "$img_file"; then
               echo "EROFS detected for ${partition_name}"
-              # Correctly check if the extract.erofs command is available
-              if command -v extract.erofs &> /dev/null; then
+              # Check for the tool at its absolute path
+              if [ -f /usr/local/bin/extract.erofs ]; then
                 out_dir="extracted_files/${partition_name}"
                 mkdir -p "${out_dir}"
-                echo "Extracting with extract.erofs..."
-                # Use the correct command 'extract.erofs' to extract files
-                extract.erofs -i "$img_file" -x -o "${out_dir}"
+                echo "Extracting with /usr/local/bin/extract.erofs..."
+                # Use the absolute path to call the command
+                /usr/local/bin/extract.erofs -i "$img_file" -x -o "${out_dir}"
                 echo "Extracted to ${out_dir}"
               else
-                echo "extract.erofs tool not found → copying raw image."
+                echo "extract.erofs tool not found at /usr/local/bin/extract.erofs → copying raw image."
                 cp -f "$img_file" "extracted_files/${partition_name}.img"
               fi
             else
