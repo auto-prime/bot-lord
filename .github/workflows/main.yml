@@ -48,6 +48,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             aria2 android-sdk-libsparse-utils p7zip-full python3-pip git rclone bsdmainutils erofs-utils
           pip3 install --no-cache-dir git+https://github.com/5ec1cff/payload-dumper
+          mkfs.erofs
 
       # 3) Set timezone
       - name: Set Vietnam Timezone
@@ -82,12 +83,6 @@ jobs:
           }
           # This tool should be available in the path after installing erofs-utils
           # We'll rely on the PATH environment variable
-          if ! command -v extract.erofs &> /dev/null; then
-            echo "WARNING: extract.erofs command not found. EROFS partitions will not be extracted."
-            EXTRACT_EROFS=""
-          else
-            EXTRACT_EROFS="extract.erofs"
-          fi
           echo "Starting extraction..."
           shopt -s nullglob
           for img_file in dumped_partitions/*.img; do
@@ -98,7 +93,7 @@ jobs:
               if [ -n "${EXTRACT_EROFS}" ]; then
                 out_dir="extracted_files/${partition_name}"
                 mkdir -p "${out_dir}"
-                "${EXTRACT_EROFS}" -i "$img_file" -o "${out_dir}"
+                mkfs.erofs -i "$img_file" -o "${out_dir}"
                 echo "Extracted to ${out_dir}"
               else
                 echo "extract.erofs missing → copying raw image."
