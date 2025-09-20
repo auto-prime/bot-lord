@@ -30,9 +30,9 @@ jobs:
     env:
       TZ: Asia/Ho_Chi_Minh
     steps:
-      # 1) Clean runner space using action (THIS IS ENOUGH!)
+      # 1) Clean runner space using action
       - name: Clean Runner Space
-        uses: easimon/maximize-build-space@master
+        uses: easimon/maximize-build-space@v10 # Pinned to a specific version for stability
         with:
           root-reserve-mb: 512
           swap-size-mb: 1024
@@ -48,7 +48,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             aria2 android-sdk-libsparse-utils p7zip-full python3-pip git rclone bsdmainutils erofs-utils
           pip3 install --no-cache-dir git+https://github.com/5ec1cff/payload-dumper
-          mkfs.erofs
 
       # 3) Set timezone
       - name: Set Vietnam Timezone
@@ -71,7 +70,7 @@ jobs:
           echo "Partitions to dump: '${{ github.event.inputs.PARTITIONS }}'"
           payload_dumper --out dumped_partitions --partitions "${{ github.event.inputs.PARTITIONS }}" rom.zip
 
-      # 6) Extract files from EROFS images
+      # 6) Extract files from partition images
       - name: Extract Files from Partition Images
         run: |
           set -euo pipefail
@@ -122,7 +121,7 @@ jobs:
           mkdir -p ~/.config/rclone
           printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
           ROM_FILENAME="$(basename "${{ github.event.inputs.ROM_URL }}")"
-          REMOTE_FOLDER_NAME="$(echo "$ROM_FILENAME" | sed 's/\.zip$//')"
+          REMOTE_FOLDER_NAME="$(basename "$ROM_FILENAME" .zip)"
           FINAL_DESTINATION="${RCLONE_DESTINATION}/Rom/${REMOTE_FOLDER_NAME}"
           echo "ROM_FILENAME=${ROM_FILENAME}" >> "$GITHUB_OUTPUT"
           echo "FINAL_DESTINATION=${FINAL_DESTINATION}" >> "$GITHUB_OUTPUT"
@@ -139,10 +138,11 @@ jobs:
           echo "::add-mask::${PUBLIC_LINK}"
           echo "PUBLIC_LINK=${PUBLIC_LINK}" >> "$GITHUB_OUTPUT"
 
-      # 9) Telegram notify (RECOMMEND using a specific version tag)
+      # 9) Telegram notify
       - name: Send Telegram Notification
         if: success()
-        uses: appleboy/telegram-action@v1.1.0 # Using a specific version is better than @master
+        # Corrected to a valid, specific version tag
+        uses: appleboy/telegram-action@v0.1.1
         with:
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -162,3 +162,4 @@ jobs:
           echo "- PARTITIONS: \`${{ github.event.inputs.PARTITIONS }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Uploaded to: \`${{ steps.rclone_upload.outputs.FINAL_DESTINATION }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Public link: \`${{ steps.generate_link.outputs.PUBLIC_LINK }}\`" >> "$GITHUB_STEP_SUMMARY"
+
