@@ -77,15 +77,12 @@ jobs:
           python3 -m venv venv
           . venv/bin/activate
           pip install --upgrade pip wheel
-          # Sử dụng fork có thể cài đặt được để tránh lỗi setup.py
           pip install git+https://github.com/5ec1cff/payload-dumper.git \
                       brotli zstandard pycryptodome tqdm
 
       - name: Prepare workspace
         run: |
-          # Tạo các thư mục cục bộ
           mkdir -p work out_imgs out_apks
-          # Dùng sudo để tạo thư mục hệ thống và cấp quyền cho người dùng hiện tại
           sudo mkdir -p /mnt/payload_mounts
           sudo chown -R $(whoami) /mnt/payload_mounts
 
@@ -109,22 +106,21 @@ jobs:
         run: |
           set -euo pipefail
           . ../venv/bin/activate
-          # Trỏ output vào thư mục out_imgs đã tạo ở bước trước
           mkdir -p ../out_imgs
           PARTS_INPUT="${{ github.event.inputs.PARTITIONS }}"
           if [ -z "$PARTS_INPUT" ]; then
             echo "[*] No partitions specified, dumping all."
-            python3 -m payload_dumper -o ../out_imgs payload.bin
+            python3 -m payload_dumper --out ../out_imgs payload.bin
           else
             echo "[*] Dumping specified partitions: $PARTS_INPUT"
-            python3 -m payload_dumper -o ../out_imgs --partitions "$PARTS_INPUT" payload.bin
+            python3 -m payload_dumper --out ../out_imgs --partitions "$PARTS_INPUT" payload.bin
           fi
 
       - name: Extract APKs from all partitions
         run: |
           set -euo pipefail
           bash -c "$(cat <<'EOF'
-          #!/usr/bin/env bash
+          #!/usr/-bin/env bash
           set -euo pipefail
 
           OUT_IMG_DIR="out_imgs"
