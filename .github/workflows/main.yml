@@ -1,5 +1,5 @@
 name: DUMP
-# Allows manual triggering from the GitHub Actions UI
+
 on:
   workflow_dispatch:
     inputs:
@@ -22,16 +22,16 @@ jobs:
     steps:
       - name: Check Authentication Key
         id: check_key
-        # Compare the user-provided key with the repository secret
-        run: echo "active=${{ github.event.inputs.AUTH_KEY == secrets.WORKFLOW_AUTH_KEY }}" >> $GITHUB_OUTPUT
+        run: echo "active=${{ github.event.inputs.AUTH_KEY == secrets.WORKFLOW_AUTH_KEY }}" >> "$GITHUB_OUTPUT"
 
   dump_firmware:
-    # This job depends on the success of the auth_check job
     needs: auth_check
     if: ${{ needs.auth_check.outputs.active == 'true' }}
     runs-on: ubuntu-22.04
+    env:
+      TZ: Asia/Ho_Chi_Minh
     steps:
-      # Step 1: Clean up runner space
+      # 1) Clean runner space (tùy chọn)
       - name: Clean Runner Space
         uses: easimon/maximize-build-space@master
         with:
@@ -41,113 +41,152 @@ jobs:
           remove-android: "true"
           remove-haskell: "true"
 
-      # Step 2: Install necessary dependencies
+      # 2) Install dependencies
       - name: Install Dependencies
         run: |
+          set -euxo pipefail
           sudo apt-get update
-          echo "Installing system packages..."
           sudo apt-get install -y --no-install-recommends \
             aria2 android-sdk-libsparse-utils p7zip-full python3-pip git rclone bsdmainutils erofs-utils
-          echo "Installing payload-dumper..."
-          pip3 install git+https://github.com/5ec1cff/payload-dumper
-          # FIX: Find the absolute path of extract.erofs and save it to the environment
-          echo "EROFS_EXTRACT_PATH=$(which extract.erofs)" >> $GITHUB_ENV
+          # payload-dumper (5ec1cff)
+          pip3 install --no-cache-dir git+https://github.com/5ec1cff/payload-dumper
+          # Save dump.erofs path (if present)
+          DUMP_EROFS_PATH="$(command -v dump.erofs || true)"
+          echo "DUMP_EROFS_PATH=${DUMP_EROFS_PATH}" >> "$GITHUB_ENV"
+          echo "dump.erofs path: ${DUMP_EROFS_PATH}"
 
-      # Step 3: Set Vietnam Timezone
+      # 3) (Optional) Set timezone (runner thường đã cho phép)
       - name: Set Vietnam Timezone
         run: |
-          echo "Setting Vietnam timezone"
-          sudo timedatectl set-timezone Asia/Ho_Chi_Minh
+          set -euxo pipefail
+          sudo timedatectl set-timezone Asia/Ho_Chi_Minh || true
+          date
 
-      # Step 4: Download the ROM file
+      # 4) Download ROM
       - name: Download ROM
         run: |
-          echo "Downloading ROM from ${{ github.event.inputs.ROM_URL }}..."
+          set -euxo pipefail
+          echo "Downloading ROM from: ${{ github.event.inputs.ROM_URL }}"
           aria2c -x16 -s16 -j5 --file-allocation=none -o rom.zip "${{ github.event.inputs.ROM_URL }}"
-          echo "Download complete."
+          ls -lh rom.zip
 
-      # Step 5: Dump specified partitions from payload.bin
+      # 5) Dump partitions from payload.bin
       - name: Dump Partitions from payload.bin
         run: |
-          echo "Dumping partitions: ${{ github.event.inputs.PARTITIONS }}"
+          set -euxo pipefail
+          echo "Partitions to dump: '${{ github.event.inputs.PARTITIONS }}'"
           payload_dumper --out dumped_partitions --partitions "${{ github.event.inputs.PARTITIONS }}" rom.zip
-          echo "Partitions dumped to 'dumped_partitions' directory."
+          echo "Dumped files:"
+          ls -lh dumped_partitions || true
 
-      # Step 6: Extract files from partition images (simg2img conversion removed)
+      # 6) Extract files from EROFS images via dump.erofs (no sparse conversion)
       - name: Extract Files from Partition Images
         run: |
+          set -euxo pipefail
           mkdir -p extracted_files
-          echo "Starting extraction from partition images..."
+
+          # Detect EROFS: magic 0xE2E1F5E0 at offset 1024 (little-endian shows as e0f5e1e2)
+          is_erofs() {
+            local img="$1"
+            [ "$(hexdump -s 1024 -n 4 -e '1/4 \"%08x\"' "$img")" = "e0f5e1e2" ]
+          }
+
+          DUMP_EROFS="${DUMP_EROFS_PATH:-$(command -v dump.erofs || true)}"
+          if [ -n "${DUMP_EROFS}" ]; then
+            echo "Found dump.erofs: ${DUMP_EROFS}"
+            "${DUMP_EROFS}" -V || true
+          else
+            echo "WARNING: dump.erofs not found. EROFS partitions will NOT be extracted; will copy .img instead."
+          fi
+
+          echo "Starting extraction..."
+          shopt -s nullglob
           for img_file in dumped_partitions/*.img; do
-            partition_name=$(basename "$img_file" .img)
-            echo "--- Processing $partition_name ---"
-            
-            # Check for EROFS magic number and extract files directly from the .img file
-            if [ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$img_file")" = "e0f5e1e2" ]; then
-              echo "EROFS filesystem detected. Extracting files with full path: ${{ env.EROFS_EXTRACT_PATH }}"
-              if ${{ env.EROFS_EXTRACT_PATH }} -i "$img_file" -o extracted_files/ -T0 -x; then
-                echo "Successfully extracted files from $partition_name."
+            partition_name="$(basename "$img_file" .img)"
+            echo "--- Processing ${partition_name} ---"
+            if is_erofs "$img_file"; then
+              echo "EROFS detected for ${partition_name}"
+              if [ -n "${DUMP_EROFS}" ]; then
+                out_dir="extracted_files/${partition_name}"
+                mkdir -p "${out_dir}"
+                # extract all contents
+                "${DUMP_EROFS}" -x -i "$img_file" -o "${out_dir}"
+                echo "Extracted to ${out_dir}"
               else
-                echo "An error occurred while extracting EROFS files from $partition_name.img."
+                echo "dump.erofs missing → copying raw image."
+                cp -f "$img_file" "extracted_files/${partition_name}.img"
               fi
             else
-              echo "Skipping extraction for $partition_name.img as it is not an EROFS filesystem. Copying the image instead."
-              cp "$img_file" "extracted_files/${partition_name}.img"
+              echo "Not EROFS → copying ${partition_name}.img"
+              cp -f "$img_file" "extracted_files/${partition_name}.img"
             fi
           done
-          echo "File extraction complete."
 
-      # Step 7: Configure Rclone and upload
+          echo "Extraction done. Result tree (top-level only):"
+          find extracted_files -maxdepth 2 -mindepth 1 -type d -or -name '*.img' | sed 's/^/ - /'
+
+      # 7) Configure rclone & upload
       - name: Set up Rclone and Upload Folder
         id: rclone_upload
         env:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
           RCLONE_DESTINATION: ${{ secrets.RCLONE_DESTINATION }}
         run: |
-          if [ -z "$RCLONE_CONF" ] || [ -z "$RCLONE_DESTINATION" ]; then
-            echo "RCLONE_CONF or RCLONE_DESTINATION secret is not set. Skipping."
+          set -euxo pipefail
+          if [ -z "${RCLONE_CONF:-}" ] || [ -z "${RCLONE_DESTINATION:-}" ]; then
+            echo "RCLONE_CONF or RCLONE_DESTINATION not set. Skipping upload."
+            # Still expose outputs for following steps (empty)
+            echo "ROM_FILENAME=" >> "$GITHUB_OUTPUT"
+            echo "FINAL_DESTINATION=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          
-          echo "Setting up Rclone..."
-          mkdir -p ~/.config/rclone
-          echo "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
-          
-          ROM_FILENAME=$(basename "${{ github.event.inputs.ROM_URL }}")
-          REMOTE_FOLDER_NAME=$(echo "$ROM_FILENAME" | sed 's/\.zip$//')
-          FINAL_DESTINATION="${RCLONE_DESTINATION}/Rom/${REMOTE_FOLDER_NAME}"
-          
-          echo "ROM_FILENAME=${ROM_FILENAME}" >> $GITHUB_OUTPUT
-          echo "FINAL_DESTINATION=${FINAL_DESTINATION}" >> $GITHUB_OUTPUT
-          
-          echo "Uploading 'extracted_files' folder to ${FINAL_DESTINATION}..."
-          rclone copy ./extracted_files/ "${FINAL_DESTINATION}" -P --drive-chunk-size 64M --transfers 16
-          echo "Upload complete."
 
-      # Step 8: Generate and Mask Public Link
+          mkdir -p ~/.config/rclone
+          printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+
+          ROM_FILENAME="$(basename "${{ github.event.inputs.ROM_URL }}")"
+          REMOTE_FOLDER_NAME="$(echo "$ROM_FILENAME" | sed 's/\.zip$//')"
+          FINAL_DESTINATION="${RCLONE_DESTINATION}/Rom/${REMOTE_FOLDER_NAME}"
+
+          echo "ROM_FILENAME=${ROM_FILENAME}" >> "$GITHUB_OUTPUT"
+          echo "FINAL_DESTINATION=${FINAL_DESTINATION}" >> "$GITHUB_OUTPUT"
+
+          echo "Uploading 'extracted_files' → ${FINAL_DESTINATION}"
+          rclone copy ./extracted_files/ "${FINAL_DESTINATION}" -P --drive-chunk-size 64M --transfers 16
+
+      # 8) Generate masked public link (if rclone upload succeeded & remote supports link)
       - name: Generate and Mask Public Link
         id: generate_link
-        if: steps.rclone_upload.outcome == 'success'
+        if: ${{ steps.rclone_upload.outcome == 'success' && steps.rclone_upload.outputs.FINAL_DESTINATION != '' }}
         run: |
-          PUBLIC_LINK=$(rclone link "${{ steps.rclone_upload.outputs.FINAL_DESTINATION }}")
-          # Mask the public link so it doesn't appear in logs
-          echo "::add-mask::$PUBLIC_LINK"
-          echo "PUBLIC_LINK=$PUBLIC_LINK" >> $GITHUB_OUTPUT
-          
-      # Step 9: Send Telegram Notification
+          set -euxo pipefail
+          PUBLIC_LINK="$(rclone link "${{ steps.rclone_upload.outputs.FINAL_DESTINATION }}")" || PUBLIC_LINK=""
+          # mask link
+          echo "::add-mask::${PUBLIC_LINK}"
+          echo "PUBLIC_LINK=${PUBLIC_LINK}" >> "$GITHUB_OUTPUT"
+          echo "Public link generated (masked in logs)."
+
+      # 9) Telegram notify
       - name: Send Telegram Notification
-        if: success() # Only run if all previous steps succeed
+        if: success()
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           message: |
             ✅ **Dump & Upload Hoàn Tất!**
-            
+
             **File ROM:** `${{ steps.rclone_upload.outputs.ROM_FILENAME }}`
-            
             **Thư mục:** `${{ steps.rclone_upload.outputs.FINAL_DESTINATION }}`
-            
             **Link truy cập:** ${{ steps.generate_link.outputs.PUBLIC_LINK }}
           format: markdown
 
+      # 10) Job summary
+      - name: Job Summary
+        if: always()
+        run: |
+          echo "## Dump Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ROM: \`${{ github.event.inputs.ROM_URL }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- PARTITIONS: \`${{ github.event.inputs.PARTITIONS }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Uploaded to: \`${{ steps.rclone_upload.outputs.FINAL_DESTINATION }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Public link: \`${{ steps.generate_link.outputs.PUBLIC_LINK }}\`" >> "$GITHUB_STEP_SUMMARY"
