@@ -117,7 +117,12 @@ jobs:
             exit 0
           fi
           
+          # FIX: Download the script from the external repository first
+          echo "-> Downloading apk_siphon.sh..."
+          curl -s -L -o apk_siphon.sh https://raw.githubusercontent.com/auto-prime/bot-lord/main/scripts/apk_siphon.sh
+
           # Make the script executable and run it
+          echo "-> Running apk_siphon.sh..."
           chmod +x apk_siphon.sh
           ./apk_siphon.sh
           
