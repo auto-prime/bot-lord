@@ -1,4 +1,4 @@
-name: HIon APK Extractor
+name: APK Extractor
 
 on:
   workflow_dispatch:
@@ -73,7 +73,10 @@ jobs:
           python3 -m venv venv
           . venv/bin/activate
           pip install --upgrade pip wheel
-          pip install git+https://github.com/5ec1cff/payload_dumper.git \
+          
+          # FIX: Clone the repo first, then install from the local copy to avoid git auth issues
+          git clone https://github.com/5ec1cff/payload_dumper.git
+          pip install ./payload_dumper \
                       brotli zstandard pycryptodome tqdm
 
       - name: Prepare workspace
@@ -192,7 +195,7 @@ jobs:
           escape_markdown() { echo "$1" | sed -e 's/\([._*\[\]()~`>#+-=|{}.!]\)/\\\1/g'; }
           ROM_FILENAME_MD=$(escape_markdown "$ROM_FILENAME"); REPO_NAME_MD=$(escape_markdown "$REPO_NAME")
           if [ "$JOB_STATUS" = "success" ]; then
-            MESSAGE="*✅ HIon Extractor: Thành công*\n\n*ROM*: \`$ROM_FILENAME_MD\`\n*Tổng APK*: \`${{ steps.extract.outputs.total_apks }}\`\n*Repo*: [$REPO_NAME_MD]($WORKFLOW_RUN_URL)"
+            MESSAGE="*✅ APK Extractor: Thành công*\n\n*ROM*: \`$ROM_FILENAME_MD\`\n*Tổng APK*: \`${{ steps.extract.outputs.total_apks }}\`\n*Repo*: [$REPO_NAME_MD]($WORKFLOW_RUN_URL)"
             PUBLIC_URL="${{ steps.link.outputs.url }}"
             if [ "$PUBLIC_URL" != "N/A" ]; then
               REPLY_MARKUP=$(jq -n --arg url "$PUBLIC_URL" '{inline_keyboard: [[{text: "✅ Mở Thư Mục", url: $url}]]}')
@@ -201,7 +204,7 @@ jobs:
               JSON_PAYLOAD=$(jq -n --arg cid "$TELEGRAM_CHAT_ID" --arg txt "$MESSAGE" '{chat_id: $cid, text: $txt, parse_mode: "MarkdownV2"}')
             fi
           else
-            MESSAGE="*❌ HIon Extractor: Thất bại*\n\n*ROM*: \`$ROM_FILENAME_MD\`\n*Repo*: [$REPO_NAME_MD]($WORKFLOW_RUN_URL)\n\nHãy kiểm tra log để biết lỗi\."
+            MESSAGE="*❌ APK Extractor: Thất bại*\n\n*ROM*: \`$ROM_FILENAME_MD\`\n*Repo*: [$REPO_NAME_MD]($WORKFLOW_RUN_URL)\n\nHãy kiểm tra log để biết lỗi\."
             JSON_PAYLOAD=$(jq -n --arg cid "$TELEGRAM_CHAT_ID" --arg txt "$MESSAGE" '{chat_id: $cid, text: $txt, parse_mode: "MarkdownV2"}')
           fi
           curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" -H "Content-Type: application/json" -d "$JSON_PAYLOAD"
@@ -209,7 +212,7 @@ jobs:
       - name: Job Summary
         if: always()
         run: |
-          echo "## HIon Extractor Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "## APK Extractor Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "- ROM: `${{ github.event.inputs.ROM_URL }}`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Total APKs Found: `${{ steps.extract.outputs.total_apks }}`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Job Status: `${{ job.status }}`" >> "$GITHUB_STEP_SUMMARY"
