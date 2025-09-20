@@ -35,7 +35,7 @@ jobs:
       TZ: Asia/Ho_Chi_Minh
 
     steps:
-      - name: Checkout
+      - name: Checkout repository files
         uses: actions/checkout@v4
 
       - name: Maximize disk space
@@ -99,13 +99,15 @@ jobs:
         run: |
           set -euo pipefail
           . venv/bin/activate
+          # The list of partitions to be extracted is defined inside apk_siphon.sh
+          # Here we just dump everything to ensure the script has all it might need.
           PARTITIONS_TO_DUMP="my_bigball,my_carrier,my_engineering,my_heytap,my_manifest,my_product,my_region,my_company,my_stock,my_preload,odm,product,system,system_ext,vendor"
           echo "[*] Dumping partitions from hardcoded list: $PARTITIONS_TO_DUMP"
           python3 -m payload_dumper --out out_imgs --partitions "$PARTITIONS_TO_DUMP" work/payload.bin
           echo "[✓] Dumping finished. Image list:"
           ls -lah out_imgs
 
-      - name: Extract APKs
+      - name: Run APK Siphon Script
         id: extract
         run: |
           echo "[*] Checking for partition images..."
@@ -114,48 +116,13 @@ jobs:
             echo "total_apks=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "-> Partition images found. Starting extraction process."
-
-          bash -c "$(cat <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          OUT_IMG_DIR="out_imgs"; OUT_APK_DIR="out_apks"; MOUNT_ROOT="/mnt/payload_mounts"; APK_SUBDIRS=("app" "priv-app")
-          is_sparse() { file -b "$1" 2>/dev/null | grep -qi "Android sparse image"; }; is_erofs() { [[ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$1" 2>/dev/null || true)" == "e0f5e1e2" ]]; }
-          safe_umount() { if mountpoint -q "$1"; then sudo umount "$1" || true; fi; }; cleanup() { for d in "$MOUNT_ROOT"/*; do [[ -d "$d" ]] && safe_umount "$d"; done; }; trap cleanup EXIT
-          shopt -s nullglob; for IMG in "$OUT_IMG_DIR"/*.img; do if is_sparse "$IMG"; then RAW="${IMG%.img}.raw.img"; simg2img "$IMG" "$RAW" && mv -f "$RAW" "$IMG"; fi; done; shopt -u nullglob
           
-          shopt -s nullglob; for IMG in "$OUT_IMG_DIR"/*.img; do
-            PART="$(basename "$IMG" .img)"; echo "--- Processing: [$PART] ---"; DEST_PART_DIR="$OUT_APK_DIR/$PART"
-            scan_and_copy_apks() {
-              local search_root="$1"; for SUBDIR in "${APK_SUBDIRS[@]}"; do
-                find "$search_root" -type d -name "$SUBDIR" -print0 2>/dev/null | while IFS= read -r -d '' SRC_DIR; do
-                  if [ -d "$SRC_DIR" ]; then REL_PATH=$(realpath --relative-to="$search_root" "$SRC_DIR"); DEST_DIR="$DEST_PART_DIR/$REL_PATH"; mkdir -p "$DEST_DIR"; rsync -a --include="*.apk" --exclude="*" "$SRC_DIR/" "$DEST_DIR/"; fi
-                done; done
-            }
-            if is_erofs "$IMG"; then
-              echo "    -> EROFS detected."
-              # FIX: Implement fallback logic for EROFS extraction
-              if command -v extract.erofs &> /dev/null; then
-                  echo "    -> Using 'extract.erofs'..."
-                  EXDIR="$MOUNT_ROOT/${PART}_erofs_dump"; mkdir -p "$EXDIR"
-                  extract.erofs -i "$IMG" -x -o "$EXDIR"; scan_and_copy_apks "$EXDIR"; rm -rf "$EXDIR"
-              elif command -v erofsfuse &> /dev/null; then
-                  echo "    -> 'extract.erofs' not found. Falling back to 'erofsfuse'..."
-                  MP="$MOUNT_ROOT/$PART"; mkdir -p "$MP"
-                  erofsfuse "$IMG" "$MP"; scan_and_copy_apks "$MP"; safe_umount "$MP"; rmdir "$MP" || true
-              else
-                  echo "    -> FATAL: Neither 'extract.erofs' nor 'erofsfuse' found. Cannot process EROFS partition." >&2
-                  exit 1
-              fi
-            else
-              echo "    -> ext4/raw detected."; MP="$MOUNT_ROOT/$PART"; mkdir -p "$MP"
-              if ! sudo mount -o ro,loop "$IMG" "$MP"; then rmdir "$MP" || true; continue; fi
-              scan_and_copy_apks "$MP"; safe_umount "$MP"; rmdir "$MP" || true
-            fi
-          done; shopt -u nullglob
-          EOF
-          )"
-          APK_COUNT=$(find out_apks -type f -name '*.apk' | wc -l || true); echo "total_apks=$APK_COUNT" >> "$GITHUB_OUTPUT"
+          # Make the script executable and run it
+          chmod +x apk_siphon.sh
+          ./apk_siphon.sh
+          
+          APK_COUNT=$(find out_apks -type f -name '*.apk' | wc -l || true)
+          echo "total_apks=$APK_COUNT" >> "$GITHUB_OUTPUT"
       
       - name: Setup rclone
         if: steps.rclone_flag.outputs.has_rclone == 'true'
