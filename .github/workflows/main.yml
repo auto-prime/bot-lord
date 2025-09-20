@@ -1,4 +1,4 @@
- Workflow namename: DUMP
+name: DUMP
 # Allows manual triggering from the GitHub Actions UI
 on:
   workflow_dispatch:
