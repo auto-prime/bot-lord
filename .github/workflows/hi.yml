@@ -52,7 +52,6 @@ jobs:
           remove-haskell: "true"
           remove-codeql: "true"
 
-      # Compute a simple flag to gate rclone steps (avoid secrets in if:)
       - name: Check rclone secrets present
         id: rclone_flag
         run: |
@@ -74,34 +73,29 @@ jobs:
             autoconf automake libtool pkg-config build-essential \
             libfuse3-dev liblz4-dev libzstd-dev liblzma-dev libselinux1-dev ca-certificates
 
-    - name: Build & install erofs-utils (autotools)
-  run: |
-    set -euo pipefail
-    git clone --depth=1 https://github.com/erofs/erofs-utils.git
-    cd erofs-utils
-    ./autogen.sh
-
-    # Try with full features first; if microlzma missing, retry without it
-    set +e
-    ./configure --enable-fuse --enable-lz4 --enable-lzma --with-libzstd
-    rc=$?
-    if [ $rc -ne 0 ]; then
-      echo "configure failed (likely microlzma). Retrying without microlzma..."
-      # common flag name in erofs-utils for this case:
-      ./configure --enable-fuse --enable-lz4 --enable-lzma --with-libzstd --disable-microlzma
-      rc=$?
-    fi
-    set -e
-    if [ $rc -ne 0 ]; then
-      echo "configure still failed"; exit 1
-    fi
-
-    make -j"$(nproc)"
-    sudo make install
-
-    # sanity checks
-    command -v extract.erofs >/dev/null || { echo "extract.erofs not found"; exit 1; }
-    command -v erofsfuse   >/dev/null || { echo "erofsfuse not found"; exit 1; }
+      - name: Build & install erofs-utils (autotools)
+        run: |
+          set -euo pipefail
+          git clone --depth=1 https://github.com/erofs/erofs-utils.git
+          cd erofs-utils
+          ./autogen.sh
+          # try full features; if microlzma missing, retry without it
+          set +e
+          ./configure --enable-fuse --enable-lz4 --enable-lzma --with-libzstd
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "configure failed (likely microlzma). Retrying without microlzma..."
+            ./configure --enable-fuse --enable-lz4 --enable-lzma --with-libzstd --disable-microlzma
+            rc=$?
+          fi
+          set -e
+          if [ $rc -ne 0 ]; then
+            echo "configure still failed"; exit 1
+          fi
+          make -j"$(nproc)"
+          sudo make install
+          command -v extract.erofs >/dev/null
+          command -v erofsfuse   >/dev/null
 
       - name: Setup Python venv + 5ec1cff/payload-dumper
         run: |
