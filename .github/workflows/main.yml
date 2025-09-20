@@ -62,6 +62,7 @@ jobs:
           make
           sudo make install
           sudo ldconfig
+          echo "/usr/local/bin" >> $GITHUB_PATH
           echo "erofs-utils installed successfully."
 
       # 3) Set timezone
