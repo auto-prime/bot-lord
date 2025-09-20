@@ -66,12 +66,14 @@ jobs:
             erofs-utils \
             python3 python3-venv python3-pip git
 
-      - name: Setup Python venv + payload-dumper
+      - name: Setup Python venv + payload-dumper (5ec1cff)
         run: |
+          set -euo pipefail
           python3 -m venv venv
           . venv/bin/activate
           pip install --upgrade pip wheel
-          pip install git+https://github.com/5ec1cff/payload-dumper.git
+          pip install git+https://github.com/5ec1cff/payload-dumper.git \
+                      brotli zstandard pycryptodome tqdm
 
       - name: Prepare workspace
         run: |
@@ -97,14 +99,18 @@ jobs:
 
       - name: Dump partitions from payload.bin
         run: |
+          set -euo pipefail
           . venv/bin/activate
+          
           if [ -f "dump_partition_list.txt" ]; then
              PARTITIONS_TO_DUMP=$(grep -vE '^\s*#|^\s*$' dump_partition_list.txt | tr '\n' ',' | sed 's/,$//')
              echo "[*] Dumping partitions from list: $PARTITIONS_TO_DUMP"
-             python3 -m payload_dumper work/payload.bin -o out_imgs --partitions "$PARTITIONS_TO_DUMP"
+             # FIX: Use correct argument --out (two dashes)
+             python3 -m payload_dumper --out out_imgs --partitions "$PARTITIONS_TO_DUMP" work/payload.bin
           else
              echo "[*] dump_partition_list.txt not found. Dumping ALL partitions."
-             python3 -m payload_dumper work/payload.bin -o out_imgs
+             # FIX: Use correct argument --out (two dashes)
+             python3 -m payload_dumper --out out_imgs work/payload.bin
           fi
           echo "[✓] Dumping finished. Image list:"
           ls -lah out_imgs
