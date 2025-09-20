@@ -1,4 +1,4 @@
-name: HI
+name: HIon APK Dumper with Telegram Notification
 
 on:
   workflow_dispatch:
@@ -77,11 +77,17 @@ jobs:
           python3 -m venv venv
           . venv/bin/activate
           pip install --upgrade pip wheel
+          # Sử dụng fork có thể cài đặt được để tránh lỗi setup.py
           pip install git+https://github.com/5ec1cff/payload-dumper.git \
-            brotli zstandard pycryptodome tqdm
+                      brotli zstandard pycryptodome tqdm
 
       - name: Prepare workspace
-        run: mkdir -p work out_imgs out_apks /mnt/payload_mounts
+        run: |
+          # Tạo các thư mục cục bộ
+          mkdir -p work out_imgs out_apks
+          # Dùng sudo để tạo thư mục hệ thống và cấp quyền cho người dùng hiện tại
+          sudo mkdir -p /mnt/payload_mounts
+          sudo chown -R $(whoami) /mnt/payload_mounts
 
       - name: Download ROM / payload.bin
         working-directory: work
@@ -97,13 +103,13 @@ jobs:
           else
             mv rom.bin payload.bin
           fi
-          ls -lah
 
       - name: Dump partitions from payload.bin
         working-directory: work
         run: |
           set -euo pipefail
           . ../venv/bin/activate
+          # Trỏ output vào thư mục out_imgs đã tạo ở bước trước
           mkdir -p ../out_imgs
           PARTS_INPUT="${{ github.event.inputs.PARTITIONS }}"
           if [ -z "$PARTS_INPUT" ]; then
@@ -113,7 +119,6 @@ jobs:
             echo "[*] Dumping specified partitions: $PARTS_INPUT"
             python3 -m payload_dumper -o ../out_imgs --partitions "$PARTS_INPUT" payload.bin
           fi
-          ls -lah ../out_imgs
 
       - name: Extract APKs from all partitions
         run: |
@@ -121,29 +126,60 @@ jobs:
           bash -c "$(cat <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
-          OUT_IMG_DIR="out_imgs"; OUT_APK_DIR="out_apks"; MOUNT_ROOT="/mnt/payload_mounts"
+
+          OUT_IMG_DIR="out_imgs"
+          OUT_APK_DIR="out_apks"
+          MOUNT_ROOT="/mnt/payload_mounts"
+          
           is_sparse() { file -b "$1" 2>/dev/null | grep -qi "Android sparse image"; }
           is_erofs() { [[ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$1" 2>/dev/null || true)" == "e0f5e1e2" ]]; }
-          safe_umount() { local mp="$1"; if mountpoint -q "$mp"; then sudo umount "$mp" || true; fi; }
-          cleanup() { for d in "$MOUNT_ROOT"/*; do [[ -d "$d" ]] && safe_umount "$d"; done; }
+          safe_umount() {
+            local mp="$1"
+            if mountpoint -q "$mp"; then sudo umount "$mp" || true; fi
+          }
+          cleanup() {
+            for d in "$MOUNT_ROOT"/*; do [[ -d "$d" ]] && safe_umount "$d"; done
+          }
           trap cleanup EXIT
-          echo "[*] Normalizing images…"; shopt -s nullglob
+
+          echo "[*] Normalizing images…"
+          shopt -s nullglob
           for IMG in "$OUT_IMG_DIR"/*.img; do
-            if is_sparse "$IMG"; then RAW="${IMG%.img}.raw.img"; simg2img "$IMG" "$RAW" && mv -f "$RAW" "$IMG"; fi
-          done
-          echo "[*] Extracting APKs from ALL partitions…";
-          for IMG in "$OUT_IMG_DIR"/*.img; do
-            PART="$(basename "$IMG" .img)"; echo "--- Processing: [$PART] ---"
-            DEST_PART_DIR="$OUT_APK_DIR/$PART"; mkdir -p "$DEST_PART_DIR"
-            if is_erofs "$IMG"; then
-              EXDIR="$MOUNT_ROOT/${PART}_erofs_dump"; mkdir -p "$EXDIR"; extract.erofs -i "$IMG" -x -o "$EXDIR"
-              rsync -a -m --include='**/*.apk' --include='*/' --exclude='*' "$EXDIR/" "$DEST_PART_DIR/"; rm -rf "$EXDIR"
-            else
-              MP="$MOUNT_ROOT/$PART"; mkdir -p "$MP"
-              if ! sudo mount -o ro,loop "$IMG" "$MP"; then rmdir "$MP" || true; continue; fi
-              rsync -a -m --include='**/*.apk' --include='*/' --exclude='*' "$MP/" "$DEST_PART_DIR/"; safe_umount "$MP"; rmdir "$MP" || true
+            if is_sparse "$IMG"; then
+              RAW="${IMG%.img}.raw.img"
+              simg2img "$IMG" "$RAW" && mv -f "$RAW" "$IMG"
             fi
-          done; shopt -u nullglob; echo "[✓] APKs extracted to: $OUT_APK_DIR"
+          done
+          shopt -u nullglob
+
+          echo "[*] Extracting APKs from ALL partitions…"
+          shopt -s nullglob
+          for IMG in "$OUT_IMG_DIR"/*.img; do
+            PART="$(basename "$IMG" .img)"
+            echo "--- Processing: [$PART] ---"
+            DEST_PART_DIR="$OUT_APK_DIR/$PART"
+            mkdir -p "$DEST_PART_DIR"
+
+            if is_erofs "$IMG"; then
+              EXDIR="$MOUNT_ROOT/${PART}_erofs_dump"
+              mkdir -p "$EXDIR"
+              extract.erofs -i "$IMG" -x -o "$EXDIR"
+              rsync -a -m --include='**/*.apk' --include='*/' --exclude='*' "$EXDIR/" "$DEST_PART_DIR/"
+              rm -rf "$EXDIR"
+            else
+              MP="$MOUNT_ROOT/$PART"
+              mkdir -p "$MP"
+              if ! sudo mount -o ro,loop "$IMG" "$MP"; then
+                rmdir "$MP" || true
+                continue
+              fi
+              rsync -a -m --include='**/*.apk' --include='*/' --exclude='*' "$MP/" "$DEST_PART_DIR/"
+              safe_umount "$MP"
+              rmdir "$MP" || true
+            fi
+          done
+          shopt -u nullglob
+          echo "[✓] APKs extracted to: $OUT_APK_DIR"
           EOF
           )"
           echo "Total APKs: $(find out_apks -type f -name '*.apk' | wc -l || true)"
@@ -187,9 +223,7 @@ jobs:
           echo "- OneDrive APK folder: `${{ steps.rclup.outputs.dest || 'N/A' }}`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Public link: `${{ steps.link.outputs.url || 'N/A' }}`" >> "$GITHUB_STEP_SUMMARY"
 
-      # --- BƯỚC MỚI ĐƯỢC THÊM VÀO ---
       - name: Send Telegram Notification
-        # 'if: always()' đảm bảo bước này luôn chạy, dù job thành công hay thất bại
         if: always()
         uses: appleboy/telegram-action@master
         with:
