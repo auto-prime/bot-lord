@@ -1,6 +1,4 @@
-# Workflow name
-name: DUMP
-
+# Workflow namename: DUMP
 # Allows manual triggering from the GitHub Actions UI
 on:
   workflow_dispatch:
@@ -33,16 +31,8 @@ jobs:
     if: ${{ needs.auth_check.outputs.active == 'true' }}
     runs-on: ubuntu-22.04
     steps:
-      # Step 1: Clean up runner space using user-provided steps
-      - name: Clean 1
-        run: |
-          docker rmi `docker images -q` || true
-          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/sudo apt/sources.list.d || true
-          sudo apt -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* mysql* php* || true
-          sudo apt -y autoremove --purge || true
-          sudo apt -y autoclean || true
-          sudo apt clean || true
-      - name: Clean 2
+      # Step 1: Clean up runner space
+      - name: Clean Runner Space
         uses: easimon/maximize-build-space@master
         with:
           root-reserve-mb: 512
@@ -51,7 +41,7 @@ jobs:
           remove-android: "true"
           remove-haskell: "true"
 
-      # Step 2: Install necessary dependencies (including erofs-utils)
+      # Step 2: Install necessary dependencies
       - name: Install Dependencies
         run: |
           sudo apt-get update
@@ -67,7 +57,7 @@ jobs:
           echo "Setting Vietnam timezone"
           sudo timedatectl set-timezone Asia/Ho_Chi_Minh
 
-      # Step 4: Download the ROM file from the provided URL
+      # Step 4: Download the ROM file
       - name: Download ROM
         run: |
           echo "Downloading ROM from ${{ github.event.inputs.ROM_URL }}..."
@@ -81,7 +71,7 @@ jobs:
           payload_dumper --out dumped_partitions --partitions "${{ github.event.inputs.PARTITIONS }}" rom.zip
           echo "Partitions dumped to 'dumped_partitions' directory."
 
-      # Step 6: Extract files from the partition image files (.img)
+      # Step 6: Extract files from partition images
       - name: Extract Files from Partition Images
         run: |
           mkdir -p extracted_files
@@ -89,56 +79,69 @@ jobs:
           for img_file in dumped_partitions/*.img; do
             partition_name=$(basename "$img_file" .img)
             echo "--- Processing $partition_name ---"
-
-            output_dir="extracted_files/$partition_name"
-            mkdir -p "$output_dir"
             
-            # Convert sparse image to raw image if necessary
             raw_image="dumped_partitions/$partition_name.raw"
             echo "Converting sparse image to raw for $partition_name..."
             simg2img "$img_file" "$raw_image" || {
               echo "$img_file is not a sparse image. Using original file."
               cp "$img_file" "$raw_image"
             }
-
-            # Check for EROFS magic number (0xE0F5E1E2) at offset 1024
+            
+            # Check for EROFS magic number and extract files
             if [ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$raw_image")" = "e0f5e1e2" ]; then
-              echo "EROFS filesystem detected. Extracting files..."
-              if sudo extract.erofs -i "$raw_image" -o "$output_dir" -T0 -x; then
+              echo "EROFS filesystem detected. Extracting files to 'extracted_files' directory..."
+              if sudo extract.erofs -i "$raw_image" -o extracted_files/ -T0 -x; then
                 echo "Successfully extracted files from $partition_name."
               else
                 echo "An error occurred while extracting EROFS files from $partition_name.raw."
               fi
             else
               echo "Skipping extraction for $partition_name.raw as it is not an EROFS filesystem. Copying the raw image instead."
-              cp "$raw_image" "$output_dir/"
+              cp "$raw_image" "extracted_files/${partition_name}.raw"
             fi
           done
           echo "File extraction complete."
 
-      # Step 7: Configure Rclone and upload the extracted folder to the cloud
+      # Step 7: Configure Rclone and upload
       - name: Set up Rclone and Upload Folder
+        id: rclone_upload
         env:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
-          # The base path for your cloud remote (e.g., 'gdrive:my_folder')
           RCLONE_DESTINATION: ${{ secrets.RCLONE_DESTINATION }}
         run: |
           if [ -z "$RCLONE_CONF" ] || [ -z "$RCLONE_DESTINATION" ]; then
             echo "RCLONE_CONF or RCLONE_DESTINATION secret is not set. Skipping upload."
             exit 0
           fi
+          
           echo "Setting up Rclone..."
           mkdir -p ~/.config/rclone
           echo "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
           
-          # Create a remote folder name based on the downloaded ROM filename
           ROM_FILENAME=$(basename "${{ github.event.inputs.ROM_URL }}")
           REMOTE_FOLDER_NAME=$(echo "$ROM_FILENAME" | sed 's/\.zip$//')
-          
-          # Construct the final destination path
           FINAL_DESTINATION="${RCLONE_DESTINATION}/Rom/${REMOTE_FOLDER_NAME}"
+          
+          # Set variables as output for the next step
+          echo "ROM_FILENAME=${ROM_FILENAME}" >> $GITHUB_OUTPUT
+          echo "FINAL_DESTINATION=${FINAL_DESTINATION}" >> $GITHUB_OUTPUT
           
           echo "Uploading 'extracted_files' folder to ${FINAL_DESTINATION}..."
           rclone copy ./extracted_files/ "${FINAL_DESTINATION}" -P --drive-chunk-size 64M --transfers 16
           echo "Upload complete."
-
+          
+      # Step 8: Send Telegram Notification
+      - name: Send Telegram Notification
+        if: success() # Only run if previous steps succeed
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          message: |
+            ✅ **Dump & Upload Hoàn Tất!**
+            
+            **File ROM:** `${{ steps.rclone_upload.outputs.ROM_FILENAME }}`
+            
+            Các file đã được tải lên thư mục sau trên cloud của bạn:
+            `${{ steps.rclone_upload.outputs.FINAL_DESTINATION }}`
+          format: markdown
