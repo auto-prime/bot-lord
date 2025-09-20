@@ -7,7 +7,7 @@ on:
         description: "Direct URL to ROM (.zip) or payload.bin"
         required: true
       PARTITIONS:
-        description: "Partitions to dump (e.g. system,product,system_ext). Empty = all"
+        description: "Partitions to dump (e.g. system,product,system_ext). Empty = defaults to APK-bearing ones"
         required: false
         default: ""
       DEST_PATH:
@@ -37,7 +37,10 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       TZ: Asia/Ho_Chi_Minh
+      # gate rclone steps
       HAS_RCLONE: ${{ (secrets.RCLONE_CONF != '' && secrets.RCLONE_DESTINATION != '') && 'true' || 'false' }}
+      # default APK-bearing partitions if input empty
+      APK_PARTS_DEFAULT: system,product,system_ext,vendor,odm,oem
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -59,7 +62,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             aria2 unzip curl file rsync bsdmainutils \
             android-sdk-libsparse-utils erofs-utils e2fsprogs util-linux \
-            python3 python3-venv python3-pip git
+            fuse3 python3 python3-venv python3-pip git
           # Python venv + 5ec1cff/payload-dumper (+ codecs)
           python3 -m venv venv
           source venv/bin/activate
@@ -87,59 +90,97 @@ jobs:
           fi
           ls -lah
 
-      - name: Dump partitions from payload.bin
+      - name: Dump partitions from payload.bin (5ec1cff)
         working-directory: work
         run: |
           set -euo pipefail
           source ../venv/bin/activate
           mkdir -p out_imgs
-          PARTS="${{ github.event.inputs.PARTITIONS }}"
-          if [[ -n "$PARTS" ]]; then
-            echo "[*] Dump selected partitions: $PARTS"
-            python -m payload_dumper --out out_imgs --partitions "$PARTS" payload.bin
+          PARTS_INPUT="${{ github.event.inputs.PARTITIONS }}"
+          if [[ -z "$PARTS_INPUT" ]]; then
+            PARTS="$APK_PARTS_DEFAULT"
           else
-            echo "[*] Dump all partitions"
-            python -m payload_dumper --out out_imgs payload.bin
+            PARTS="$PARTS_INPUT"
           fi
+          echo "[*] Dump partitions: $PARTS"
+          python -m payload_dumper --out out_imgs --partitions "$PARTS" payload.bin
           ls -lah out_imgs
 
-      - name: Extract APKs (EROFS/ext4 aware)
+      - name: Extract APKs (EROFS/ext4 aware; erofsfuse fallback)
         run: |
           set -euo pipefail
           cat > scripts/apk_siphon.sh << 'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
           OUT_IMG_DIR="work/out_imgs"; OUT_APK_DIR="work/out_apks"; MOUNT_ROOT="/mnt/payload_mounts"
+          CANDIDATE_PARTS=("system" "product" "system_ext" "vendor" "odm" "oem")
           APK_DIRS=("system/app" "system/priv-app" "product/app" "system_ext/app" "vendor/app" "odm/app" "oem/app")
+
           mkdir -p "$OUT_IMG_DIR" "$OUT_APK_DIR" "$MOUNT_ROOT"
+
+          has(){ command -v "$1" >/dev/null 2>&1; }
           is_sparse(){ file -b "$1" 2>/dev/null | grep -qi "Android sparse image"; }
           is_erofs(){ [[ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$1" 2>/dev/null || true)" == "e0f5e1e2" ]]; }
-          safe_umount(){ mountpoint -q "$1" && sudo umount "$1" || true; }
+
+          safe_umount(){
+            local mp="$1"
+            if mountpoint -q "$mp"; then
+              fusermount3 -u "$mp" 2>/dev/null || sudo umount "$mp" || true
+            fi
+          }
           cleanup(){ for d in "$MOUNT_ROOT"/*; do [[ -d "$d" ]] && safe_umount "$d"; done; }
           trap cleanup EXIT
 
+          # Normalize sparse → raw
           shopt -s nullglob
           for IMG in "$OUT_IMG_DIR"/*.img; do
             if is_sparse "$IMG"; then
-              RAW="${IMG%.img}.raw.img"; echo "→ $(basename "$IMG") is sparse → simg2img"
+              RAW="${IMG%.img}.raw.img"
+              echo "→ $(basename "$IMG") is sparse → simg2img"
               simg2img "$IMG" "$RAW" && mv "$RAW" "$IMG"
             fi
           done
 
+          # Build lookup for wanted partitions
+          declare -A WANT=()
+          for p in "${CANDIDATE_PARTS[@]}"; do WANT["$p"]=1; done
+
           for IMG in "$OUT_IMG_DIR"/*.img; do
-            PART="$(basename "$IMG" .img)"; echo "--- [$PART] ---"
+            PART="$(basename "$IMG" .img)"
+            [[ -n "${WANT[$PART]:-}" ]] || { echo "--- [$PART] (skip: not APK-bearing) ---"; continue; }
+
+            echo "--- [$PART] ---"
             if is_erofs "$IMG"; then
-              EXDIR="$OUT_APK_DIR/$PART/_fs"; mkdir -p "$EXDIR"
-              extract.erofs -i "$IMG" -x -o "$EXDIR"
-              for d in "${APK_DIRS[@]}"; do
-                SRC="$EXDIR/$d"; [[ -d "$SRC" ]] || continue
-                DEST="$OUT_APK_DIR/$PART/$d"; mkdir -p "$DEST"
-                rsync -a --include="*/" --include="*.apk" --exclude="*" "$SRC/" "$DEST/"
-              done
-              rm -rf "$EXDIR"
+              if has extract.erofs; then
+                EXDIR="$OUT_APK_DIR/$PART/_fs"; mkdir -p "$EXDIR"
+                echo "   EROFS: extract.erofs → $EXDIR"
+                extract.erofs -i "$IMG" -x -o "$EXDIR"
+                for d in "${APK_DIRS[@]}"; do
+                  SRC="$EXDIR/$d"; [[ -d "$SRC" ]] || continue
+                  DEST="$OUT_APK_DIR/$PART/$d"; mkdir -p "$DEST"
+                  rsync -a --include="*/" --include="*.apk" --exclude="*" "$SRC/" "$DEST/"
+                done
+                rm -rf "$EXDIR"
+              elif has erofsfuse; then
+                MP="$MOUNT_ROOT/$PART"; mkdir -p "$MP"
+                echo "   EROFS: erofsfuse → $MP"
+                erofsfuse "$IMG" "$MP"
+                for d in "${APK_DIRS[@]}"; do
+                  SRC="$MP/$d"; [[ -d "$SRC" ]] || continue
+                  DEST="$OUT_APK_DIR/$PART/$d"; mkdir -p "$DEST"
+                  rsync -a --include="*/" --include="*.apk" --exclude="*" "$SRC/" "$DEST/"
+                done
+                safe_umount "$MP"; rmdir "$MP" || true
+              else
+                echo "   ! Neither extract.erofs nor erofsfuse found — skipping $PART"
+              fi
             else
               MP="$MOUNT_ROOT/$PART"; mkdir -p "$MP"
-              if ! sudo mount -o ro,loop "$IMG" "$MP"; then echo "  ! mount failed → skip $PART"; rmdir "$MP" || true; continue; fi
+              if ! sudo mount -o ro,loop "$IMG" "$MP"; then
+                echo "   ! mount failed → skip $PART"
+                rmdir "$MP" || true
+                continue
+              fi
               for d in "${APK_DIRS[@]}"; do
                 SRC="$MP/$d"; [[ -d "$SRC" ]] || continue
                 DEST="$OUT_APK_DIR/$PART/$d"; mkdir -p "$DEST"
@@ -163,7 +204,7 @@ jobs:
         env:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
 
-      - name: Upload APK folder to OneDrive
+      - name: Upload APK folder to OneDrive (preserve tree)
         if: ${{ env.HAS_RCLONE == 'true' }}
         id: rclup
         working-directory: work
@@ -207,7 +248,7 @@ jobs:
         run: |
           echo "## HI Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "- ROM: \`${{ github.event.inputs.ROM_URL }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- PARTITIONS: \`${{ github.event.inputs.PARTITIONS }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- PARTITIONS: \`${{ github.event.inputs.PARTITIONS || env.APK_PARTS_DEFAULT }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- DEST_PATH: \`${{ github.event.inputs.DEST_PATH }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- ADD_ROM_SUBFOLDER: \`${{ github.event.inputs.ADD_ROM_SUBFOLDER }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- OneDrive APK folder: \`${{ steps.rclup.outputs.dest || 'N/A' }}\`" >> "$GITHUB_STEP_SUMMARY"
