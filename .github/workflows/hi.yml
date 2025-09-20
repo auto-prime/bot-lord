@@ -71,7 +71,7 @@ jobs:
             erofs-utils \
             python3 python3-venv python3-pip git
 
-      - name: Setup Python venv + payload-dumper (5ec1cff)
+      - name: Setup Python venv + payload-dumper
         run: |
           set -euo pipefail
           python3 -m venv venv
@@ -124,8 +124,6 @@ jobs:
           OUT_IMG_DIR="work/out_imgs"
           OUT_APK_DIR="work/out_apks"
           MOUNT_ROOT="/mnt/payload_mounts"
-          CANDIDATE_PARTS=("system" "product" "system_ext" "vendor" "odm" "oem")
-          APK_DIRS=("system/app" "system/priv-app" "product/app" "system_ext/app" "vendor/app" "odm/app" "oem/app")
 
           mkdir -p "$OUT_IMG_DIR" "$OUT_APK_DIR" "$MOUNT_ROOT"
 
@@ -142,6 +140,7 @@ jobs:
           cleanup(){ for d in "$MOUNT_ROOT"/*; do [[ -d "$d" ]] && safe_umount "$d"; done; }
           trap cleanup EXIT
 
+          # Convert sparse images to raw images first
           shopt -s nullglob
           for IMG in "$OUT_IMG_DIR"/*.img; do
             if is_sparse "$IMG"; then
@@ -151,60 +150,82 @@ jobs:
             fi
           done
 
-          declare -A WANT=()
-          for p in "${CANDIDATE_PARTS[@]}"; do WANT["$p"]=1; done
-
+          # Process every partition image found
           for IMG in "$OUT_IMG_DIR"/*.img; do
             PART="$(basename "$IMG" .img)"
-            [[ -n "${WANT[$PART]:-}" ]] || { echo "skip $PART"; continue; }
+            echo "--- Processing partition: [$PART] ---"
+            
+            EXTRACT_ROOT="" # This will be the path to the mounted/extracted filesystem root
 
-            echo "--- [$PART] ---"
+            # Handle EROFS by extracting first, as it's often faster and more reliable than FUSE
             if is_erofs "$IMG"; then
               if has extract.erofs; then
-                EXDIR="$OUT_APK_DIR/$PART/_fs"
+                echo "EROFS detected. Extracting with extract.erofs..."
+                EXDIR="$OUT_APK_DIR/$PART/_fs_tmp"
                 mkdir -p "$EXDIR"
-                extract.erofs -i "$IMG" -x -o "$EXDIR"
-                for d in "${APK_DIRS[@]}"; do
-                  SRC="$EXDIR/$d"; [[ -d "$SRC" ]] || continue
-                  DEST="$OUT_APK_DIR/$PART/$d"; mkdir -p "$DEST"
-                  rsync -a --include="*/" --include="*.apk" --exclude="*" "$SRC/" "$DEST/"
-                done
-                rm -rf "$EXDIR"
-              elif has erofsfuse; then
+                if extract.erofs -i "$IMG" -x -o "$EXDIR"; then
+                  EXTRACT_ROOT="$EXDIR"
+                else
+                  echo "extract.erofs failed for $PART. Skipping."
+                  rm -rf "$EXDIR"
+                  continue
+                fi
+              elif has erofsfuse; then # Fallback to FUSE if extract.erofs is not available
+                echo "EROFS detected. Mounting with erofsfuse..."
                 MP="$MOUNT_ROOT/$PART"
                 mkdir -p "$MP"
-                erofsfuse "$IMG" "$MP"
-                for d in "${APK_DIRS[@]}"; do
-                  SRC="$MP/$d"; [[ -d "$SRC" ]] || continue
-                  DEST="$OUT_APK_DIR/$PART/$d"; mkdir -p "$DEST"
-                  rsync -a --include="*/" --include="*.apk" --exclude="*" "$SRC/" "$DEST/"
-                done
-                safe_umount "$MP"
-                rmdir "$MP" || true
+                if erofsfuse "$IMG" "$MP"; then
+                  EXTRACT_ROOT="$MP"
+                else
+                  echo "erofsfuse failed for $PART. Skipping."
+                  rmdir "$MP" || true
+                  continue
+                fi
               else
-                echo "no erofs tool found"; exit 1
+                echo "No tool found to handle EROFS image: $PART. Skipping."
+                continue
               fi
-            else
+            else # Handle ext4/other filesystems by mounting
+              echo "ext4/raw image detected. Mounting..."
               MP="$MOUNT_ROOT/$PART"
               mkdir -p "$MP"
-              if ! sudo mount -o ro,loop "$IMG" "$MP"; then
-                echo "mount failed: $PART"
+              if sudo mount -o ro,loop "$IMG" "$MP"; then
+                EXTRACT_ROOT="$MP"
+              else
+                echo "mount failed for image: $PART. Skipping."
                 rmdir "$MP" || true
                 continue
               fi
-              for d in "${APK_DIRS[@]}"; do
-                SRC="$MP/$d"; [[ -d "$SRC" ]] || continue
-                DEST="$OUT_APK_DIR/$PART/$d"; mkdir -p "$DEST"
-                rsync -a --include="*/" --include="*.apk" --exclude="*" "$SRC/" "$DEST/"
+            fi
+
+            # Now, find and copy APKs from the extracted/mounted location
+            if [ -n "$EXTRACT_ROOT" ]; then
+              # Find any directory named "app" or "priv-app" at any depth
+              find "$EXTRACT_ROOT" -type d \( -name "app" -o -name "priv-app" \) 2>/dev/null | while read -r SRC_DIR; do
+                # Get the path relative to the extracted/mounted root
+                RELATIVE_PATH="${SRC_DIR#"$EXTRACT_ROOT/"}"
+                DEST="$OUT_APK_DIR/$PART/$RELATIVE_PATH"
+                mkdir -p "$DEST"
+                
+                echo "Copying APKs from $PART/$RELATIVE_PATH"
+                # Use rsync to copy only .apk files and the directory structure they are in
+                rsync -a --include="*/" --include="*.apk" --exclude="*" "$SRC_DIR/" "$DEST/"
               done
-              safe_umount "$MP"
-              rmdir "$MP" || true
+
+              # Cleanup after processing
+              if [[ "$EXTRACT_ROOT" == *"/_fs_tmp"* ]]; then # It was extracted
+                rm -rf "$EXTRACT_ROOT"
+              else # It was mounted
+                safe_umount "$EXTRACT_ROOT"
+                rmdir "$EXTRACT_ROOT" || true
+              fi
             fi
           done
           EOF
           chmod +x scripts/apk_siphon.sh
           ./scripts/apk_siphon.sh
-          echo "APK count: $(find work/out_apks -type f -name '*.apk' | wc -l || true)"
+          echo "Total APK count: $(find work/out_apks -type f -name '*.apk' | wc -l || true)"
+          echo "Extracted folders:"
           find work/out_apks -maxdepth 3 -type d | head -n 50 || true
 
       - name: Setup rclone (OneDrive)
@@ -253,6 +274,18 @@ jobs:
           [ -n "$LINK" ] && echo "::add-mask::$LINK"
           echo "url=${LINK:-N/A}" >> "$GITHUB_OUTPUT"
 
+      - name: Send link to Telegram
+        if: steps.link.outputs.url != 'N/A' && steps.rclone_flag.outputs.has_rclone == 'true'
+        run: |
+          set -euo pipefail
+          # Prepare message content with HTML formatting
+          MESSAGE="<b>APK Dump Complete!</b>%0A%0A<b>ROM:</b> <code>${{ github.event.inputs.ROM_URL }}</code>%0A<b>Download:</b> <a href='${{ steps.link.outputs.url }}'>LINK</a>"
+          # Send the message using curl
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d "text=$MESSAGE" \
+            -d "parse_mode=HTML"
+
       - name: Job Summary
         if: always()
         run: |
@@ -263,5 +296,6 @@ jobs:
           echo "- ADD_ROM_SUBFOLDER: `${{ github.event.inputs.ADD_ROM_SUBFOLDER }}`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Rclone enabled: `${{ steps.rclone_flag.outputs.has_rclone }}`" >> "$GITHUB_STEP_SUMMARY"
           echo "- OneDrive APK folder: `${{ steps.rclup.outputs.dest || 'N/A' }}`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Public link: `${{ steps.link.outputs.url || 'N/A' }}`" >> "$GITHUB_STEP_SUMMARY"
+          # The public link is masked in the logs, so it won't be visible here either
+          echo "- Public link: `Link sent to Telegram (if configured)`" >> "$GITHUB_STEP_SUMMARY"
 
