@@ -53,21 +53,21 @@ jobs:
           remove-haskell: "true"
           remove-codeql: "true"
 
-      - name: Install dependencies
+            - name: Install dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            aria2 unzip curl file rsync bsdmainutils \
+            aria2 unzip curl file rsync hexdump \
             android-sdk-libsparse-utils erofs-utils e2fsprogs util-linux \
             python3 python3-venv python3-pip git
-          # Python fallback dumper
-          python3 -m venv venv && source venv/bin/activate
-          pip install --upgrade pip && pip install payload-dumper
-          # payload-dumper-go (binary)
-          cd /usr/local/bin
-          curl -L -o payload-dumper-go https://github.com/ssut/payload-dumper-go/releases/latest/download/payload-dumper-go_linux_amd64
-          chmod +x payload-dumper-go
+          # Python venv + 5ec1cff/payload-dumper (+ common codecs)
+          python3 -m venv venv
+          source venv/bin/activate
+          pip install --upgrade pip wheel
+          pip install git+https://github.com/5ec1cff/payload-dumper.git \
+                      brotli zstandard pycryptodome tqdm
+
 
       - name: Prepare workspace
         run: mkdir -p work out_imgs out_apks scripts /mnt/payload_mounts
@@ -89,27 +89,19 @@ jobs:
           fi
           ls -lah
 
-      - name: Dump partitions from payload.bin
+          - name: Dump partitions from payload.bin
         working-directory: work
         run: |
           set -euo pipefail
+          source ../venv/bin/activate
           mkdir -p out_imgs
-          if [[ -n "${{ github.event.inputs.PARTITIONS }}" ]]; then
-            echo "[*] Dump partitions: ${{ github.event.inputs.PARTITIONS }}"
-            /usr/local/bin/payload-dumper-go -o out_imgs -p "${{ github.event.inputs.PARTITIONS }}" payload.bin
+          PARTS="${{ github.event.inputs.PARTITIONS }}"
+          if [[ -n "$PARTS" ]]; then
+            echo "[*] Dump selected partitions: $PARTS"
+            python -m payload_dumper --out out_imgs --partitions "$PARTS" payload.bin
           else
             echo "[*] Dump all partitions"
-            /usr/local/bin/payload-dumper-go -o out_imgs payload.bin
-          fi
-          # Fallback to Python dumper if needed
-          if [ "$(ls -1 out_imgs/*.img 2>/dev/null | wc -l)" -eq 0 ]; then
-            echo "[!] Fallback to Python payload-dumper"
-            source ../venv/bin/activate
-            if [[ -n "${{ github.event.inputs.PARTITIONS }}" ]]; then
-              payload-dumper --out out_imgs --partitions "${{ github.event.inputs.PARTITIONS }}" payload.bin
-            else
-              payload-dumper --out out_imgs payload.bin
-            fi
+            python -m payload_dumper --out out_imgs payload.bin
           fi
           ls -lah out_imgs
 
