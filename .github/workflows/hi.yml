@@ -51,7 +51,6 @@ jobs:
       - name: Check rclone secrets present
         id: rclone_flag
         run: |
-          set -euo pipefail
           if [ -n "${{ secrets.RCLONE_CONF }}" ] && [ -n "${{ secrets.RCLONE_DESTINATION }}" ]; then
             echo "has_rclone=true" >> "$GITHUB_OUTPUT"
           else
@@ -60,7 +59,6 @@ jobs:
 
       - name: Install dependencies
         run: |
-          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             aria2 unzip curl file rsync jq \
@@ -70,7 +68,6 @@ jobs:
 
       - name: Setup Python venv + payload-dumper
         run: |
-          set -euo pipefail
           python3 -m venv venv
           . venv/bin/activate
           pip install --upgrade pip wheel
@@ -78,8 +75,6 @@ jobs:
 
       - name: Prepare workspace
         run: |
-          set -euo pipefail
-          # FIX: Sửa lỗi "Permission denied" bằng cách dùng sudo và cấp quyền cho thư mục
           echo "Preparing workspace and mount point..."
           sudo mkdir -p /mnt/payload_mounts
           sudo chown $USER:$USER /mnt/payload_mounts
@@ -89,7 +84,6 @@ jobs:
       - name: Download ROM / payload.bin
         working-directory: work
         run: |
-          set -euo pipefail
           aria2c -x16 -s16 -j5 --file-allocation=none -o rom.bin "${{ github.event.inputs.ROM_URL }}"
           if file -b rom.bin | grep -qi "Zip archive"; then
             unzip -o -q rom.bin -d romzip
@@ -103,9 +97,7 @@ jobs:
 
       - name: Dump partitions from payload.bin
         run: |
-          set -euo pipefail
           . venv/bin/activate
-          # Đọc file dump_partition_list.txt để lấy danh sách phân vùng cần dump
           if [ -f "dump_partition_list.txt" ]; then
              PARTITIONS_TO_DUMP=$(grep -vE '^\s*#|^\s*$' dump_partition_list.txt | tr '\n' ',' | sed 's/,$//')
              echo "[*] Dumping partitions from list: $PARTITIONS_TO_DUMP"
@@ -120,7 +112,6 @@ jobs:
       - name: Extract APKs
         id: extract
         run: |
-          # Script này sẽ đọc danh sách phân vùng từ file dump_partition_list.txt
           if [ -f "dump_partition_list.txt" ]; then
             PART_LIST=$(grep -vE '^\s*#|^\s*$' dump_partition_list.txt | tr '\n' ' ' | sed 's/ $//')
             export PARTITION_LIST_FROM_FILE="$PART_LIST"
@@ -131,137 +122,87 @@ jobs:
           bash -c "$(cat <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
-
-          OUT_IMG_DIR="out_imgs"
-          OUT_APK_DIR="out_apks"
-          MOUNT_ROOT="/mnt/payload_mounts"
-          APK_SUBDIRS=("app" "priv-app")
-          
+          OUT_IMG_DIR="out_imgs"; OUT_APK_DIR="out_apks"; MOUNT_ROOT="/mnt/payload_mounts"; APK_SUBDIRS=("app" "priv-app")
           if [ -n "$PARTITION_LIST_FROM_FILE" ]; then
-              echo "Using partition list from file: $PARTITION_LIST_FROM_FILE"
               read -r -a CANDIDATE_PARTS <<< "$PARTITION_LIST_FROM_FILE"
           else
-              echo "Using default hardcoded partition list."
               CANDIDATE_PARTS=("system" "product" "system_ext" "vendor" "odm" "oem" "my_product")
           fi
-
-          is_sparse() { file -b "$1" 2>/dev/null | grep -qi "Android sparse image"; }
-          is_erofs() { [[ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$1" 2>/dev/null || true)" == "e0f5e1e2" ]]; }
-          safe_umount() { if mountpoint -q "$1"; then sudo umount "$1" || true; fi; }
-          cleanup() { for d in "$MOUNT_ROOT"/*; do [[ -d "$d" ]] && safe_umount "$d"; done; }
-          trap cleanup EXIT
-
-          echo "[*] Normalizing images..."
-          shopt -s nullglob
-          for IMG in "$OUT_IMG_DIR"/*.img; do
-            if is_sparse "$IMG"; then
-              RAW="${IMG%.img}.raw.img"; simg2img "$IMG" "$RAW" && mv -f "$RAW" "$IMG";
-            fi
-          done; shopt -u nullglob
-
-          echo "[*] Extracting APKs from CANDIDATE partitions..."
+          is_sparse() { file -b "$1" 2>/dev/null | grep -qi "Android sparse image"; }; is_erofs() { [[ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$1" 2>/dev/null || true)" == "e0f5e1e2" ]]; }
+          safe_umount() { if mountpoint -q "$1"; then sudo umount "$1" || true; fi; }; cleanup() { for d in "$MOUNT_ROOT"/*; do [[ -d "$d" ]] && safe_umount "$d"; done; }; trap cleanup EXIT
+          shopt -s nullglob; for IMG in "$OUT_IMG_DIR"/*.img; do if is_sparse "$IMG"; then RAW="${IMG%.img}.raw.img"; simg2img "$IMG" "$RAW" && mv -f "$RAW" "$IMG"; fi; done; shopt -u nullglob
           declare -A a_want_part=(); for p in "${CANDIDATE_PARTS[@]}"; do a_want_part["$p"]=1; done
-          
-          shopt -s nullglob
-          for IMG in "$OUT_IMG_DIR"/*.img; do
-            PART="$(basename "$IMG" .img)"
-            [[ -v a_want_part[$PART] ]] || { continue; }
-            echo "--- Processing: [$PART] ---"
-            DEST_PART_DIR="$OUT_APK_DIR/$PART"
-            
+          shopt -s nullglob; for IMG in "$OUT_IMG_DIR"/*.img; do
+            PART="$(basename "$IMG" .img)"; [[ -v a_want_part[$PART] ]] || { continue; }; echo "--- Processing: [$PART] ---"; DEST_PART_DIR="$OUT_APK_DIR/$PART"
             scan_and_copy_apks() {
-              local search_root="$1"
-              for SUBDIR in "${APK_SUBDIRS[@]}"; do
+              local search_root="$1"; for SUBDIR in "${APK_SUBDIRS[@]}"; do
                 find "$search_root" -type d -name "$SUBDIR" -print0 2>/dev/null | while IFS= read -r -d '' SRC_DIR; do
-                  if [ -d "$SRC_DIR" ]; then
-                    REL_PATH=$(realpath --relative-to="$search_root" "$SRC_DIR")
-                    DEST_DIR="$DEST_PART_DIR/$REL_PATH"; mkdir -p "$DEST_DIR"
-                    rsync -a --include="*.apk" --exclude="*" "$SRC_DIR/" "$DEST_DIR/"
-                  fi; done; done
+                  if [ -d "$SRC_DIR" ]; then REL_PATH=$(realpath --relative-to="$search_root" "$SRC_DIR"); DEST_DIR="$DEST_PART_DIR/$REL_PATH"; mkdir -p "$DEST_DIR"; rsync -a --include="*.apk" --exclude="*" "$SRC_DIR/" "$DEST_DIR/"; fi
+                done; done
             }
-
-            if is_erofs "$IMG"; then
-              EXDIR="$MOUNT_ROOT/${PART}_erofs_dump"; mkdir -p "$EXDIR"
-              extract.erofs -i "$IMG" -x -o "$EXDIR" &>/dev/null
-              scan_and_copy_apks "$EXDIR"; rm -rf "$EXDIR"
-            else
-              MP="$MOUNT_ROOT/$PART"; mkdir -p "$MP"
-              if ! sudo mount -o ro,loop "$IMG" "$MP"; then rmdir "$MP" || true; continue; fi
-              scan_and_copy_apks "$MP"; safe_umount "$MP"; rmdir "$MP" || true
-            fi
+            if is_erofs "$IMG"; then EXDIR="$MOUNT_ROOT/${PART}_erofs_dump"; mkdir -p "$EXDIR"; extract.erofs -i "$IMG" -x -o "$EXDIR" &>/dev/null; scan_and_copy_apks "$EXDIR"; rm -rf "$EXDIR"
+            else MP="$MOUNT_ROOT/$PART"; mkdir -p "$MP"; if ! sudo mount -o ro,loop "$IMG" "$MP"; then rmdir "$MP" || true; continue; fi; scan_and_copy_apks "$MP"; safe_umount "$MP"; rmdir "$MP" || true; fi
           done; shopt -u nullglob
-          echo "[✓] APKs extraction finished."
           EOF
           )"
-          
-          APK_COUNT=$(find out_apks -type f -name '*.apk' | wc -l || true)
-          echo "total_apks=$APK_COUNT" >> "$GITHUB_OUTPUT"
+          APK_COUNT=$(find out_apks -type f -name '*.apk' | wc -l || true); echo "total_apks=$APK_COUNT" >> "$GITHUB_OUTPUT"
       
       - name: Setup rclone
-        if: ${{ steps.rclone_flag.outputs.has_rclone == 'true' }}
+        if: steps.rclone_flag.outputs.has_rclone == 'true'
         run: |
           curl -fsSL https://rclone.org/install.sh | sudo bash
           mkdir -p ~/.config/rclone
           printf '%s\n' "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
       
       - name: Upload APK folder
-        if: ${{ steps.rclone_flag.outputs.has_rclone == 'true' }}
+        if: steps.rclone_flag.outputs.has_rclone == 'true'
         id: rclup
         env:
           BASE: ${{ secrets.RCLONE_DESTINATION }}
         run: |
           ROM_BASE="$(basename "${{ github.event.inputs.ROM_URL }}")"; ROM_STEM="${ROM_BASE%.*}"
           DEST_PATH_INPUT="${{ github.event.inputs.DEST_PATH }}"; DEST_PATH_INPUT="${DEST_PATH_INPUT#/}"; DEST_PATH_INPUT="${DEST_PATH_INPUT%/}"
-          if [ "${{ github.event.inputs.ADD_ROM_SUBFOLDER }}" = "true" ]; then
-            DEST="${BASE%/}/${DEST_PATH_INPUT}/${ROM_STEM}/"
-          else
-            DEST="${BASE%/}/${DEST_PATH_INPUT}/"
-          fi
+          if [ "${{ github.event.inputs.ADD_ROM_SUBFOLDER }}" = "true" ]; then DEST="${BASE%/}/${DEST_PATH_INPUT}/${ROM_STEM}/"; else DEST="${BASE%/}/${DEST_PATH_INPUT}/"; fi
           echo "dest=$DEST" >> "$GITHUB_OUTPUT"
           rclone copy "out_apks/" "$DEST" --transfers 16 --checkers 16 --onedrive-chunk-size 80M --create-empty-src-dirs
           printf 'Total APK files: %s\n' "${{ steps.extract.outputs.total_apks }}" > /tmp/INDEX.txt
           rclone copy /tmp/INDEX.txt "$DEST"
           
       - name: Generate Public Link
-        if: ${{ steps.rclone_flag.outputs.has_rclone == 'true' }}
+        if: steps.rclone_flag.outputs.has_rclone == 'true'
         id: link
         run: |
           LINK="$(rclone link --onedrive-link-type view --onedrive-link-scope anonymous "${{ steps.rclup.outputs.dest }}" 2>/dev/null || true)"
-          [ -n "$LINK" ] && echo "::add-mask::$LINK"
-          echo "url=${LINK:-N/A}" >> "$GITHUB_OUTPUT"
+          [ -n "$LINK" ] && echo "::add-mask::$LINK"; echo "url=${LINK:-N/A}" >> "$GITHUB_OUTPUT"
 
       - name: Send Telegram Notification
-        # FIX: Sửa lỗi cú pháp "Unrecognized named-value: 'secrets'"
-        if: always() && secrets.TELEGRAM_BOT_TOKEN != '' && secrets.TELEGRAM_CHAT_ID != ''
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          JOB_STATUS="${{ job.status }}"
-          ROM_FILENAME=$(basename "${{ github.event.inputs.ROM_URL }}")
-          REPO_NAME="${{ github.repository }}"
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram secrets not provided. Skipping notification."
+            exit 0
+          fi
+          JOB_STATUS="${{ job.status }}"; ROM_FILENAME=$(basename "${{ github.event.inputs.ROM_URL }}"); REPO_NAME="${{ github.repository }}"
           WORKFLOW_RUN_URL="https://github.com/$REPO_NAME/actions/runs/${{ github.run_id }}"
-          
           escape_markdown() { echo "$1" | sed -e 's/\([._*\[\]()~`>#+-=|{}.!]\)/\\\1/g'; }
-          ROM_FILENAME_MD=$(escape_markdown "$ROM_FILENAME")
-          REPO_NAME_MD=$(escape_markdown "$REPO_NAME")
-          
+          ROM_FILENAME_MD=$(escape_markdown "$ROM_FILENAME"); REPO_NAME_MD=$(escape_markdown "$REPO_NAME")
           if [ "$JOB_STATUS" = "success" ]; then
-            MESSAGE="*✅ HIon Extractor: Thành công*\n\n*ROM*: \`$ROM_FILENAME_MD\`\n*Tổng số APK*: \`${{ steps.extract.outputs.total_apks }}\`\n*Repo*: [$REPO_NAME_MD]($WORKFLOW_RUN_URL)"
+            MESSAGE="*✅ HIon Extractor: Thành công*\n\n*ROM*: \`$ROM_FILENAME_MD\`\n*Tổng APK*: \`${{ steps.extract.outputs.total_apks }}\`\n*Repo*: [$REPO_NAME_MD]($WORKFLOW_RUN_URL)"
             PUBLIC_URL="${{ steps.link.outputs.url }}"
             if [ "$PUBLIC_URL" != "N/A" ]; then
               REPLY_MARKUP=$(jq -n --arg url "$PUBLIC_URL" '{inline_keyboard: [[{text: "✅ Mở Thư Mục", url: $url}]]}')
-              JSON_PAYLOAD=$(jq -n --arg cid "${{ secrets.TELEGRAM_CHAT_ID }}" --arg txt "$MESSAGE" --argjson rkm "$REPLY_MARKUP" \
-                '{chat_id: $cid, text: $txt, parse_mode: "MarkdownV2", reply_markup: $rkm}')
+              JSON_PAYLOAD=$(jq -n --arg cid "$TELEGRAM_CHAT_ID" --arg txt "$MESSAGE" --argjson rkm "$REPLY_MARKUP" '{chat_id: $cid, text: $txt, parse_mode: "MarkdownV2", reply_markup: $rkm}')
             else
-              JSON_PAYLOAD=$(jq -n --arg cid "${{ secrets.TELEGRAM_CHAT_ID }}" --arg txt "$MESSAGE" \
-                '{chat_id: $cid, text: $txt, parse_mode: "MarkdownV2"}')
+              JSON_PAYLOAD=$(jq -n --arg cid "$TELEGRAM_CHAT_ID" --arg txt "$MESSAGE" '{chat_id: $cid, text: $txt, parse_mode: "MarkdownV2"}')
             fi
           else
-            MESSAGE="*❌ HIon Extractor: Thất bại*\n\n*ROM*: \`$ROM_FILENAME_MD\`\n*Repo*: [$REPO_NAME_MD]($WORKFLOW_RUN_URL)\n\nHãy kiểm tra log để biết chi tiết lỗi\."
-            JSON_PAYLOAD=$(jq -n --arg cid "${{ secrets.TELEGRAM_CHAT_ID }}" --arg txt "$MESSAGE" \
-              '{chat_id: $cid, text: $txt, parse_mode: "MarkdownV2"}')
+            MESSAGE="*❌ HIon Extractor: Thất bại*\n\n*ROM*: \`$ROM_FILENAME_MD\`\n*Repo*: [$REPO_NAME_MD]($WORKFLOW_RUN_URL)\n\nHãy kiểm tra log để biết lỗi\."
+            JSON_PAYLOAD=$(jq -n --arg cid "$TELEGRAM_CHAT_ID" --arg txt "$MESSAGE" '{chat_id: $cid, text: $txt, parse_mode: "MarkdownV2"}')
           fi
-          
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
-               -H "Content-Type: application/json" -d "$JSON_PAYLOAD"
+          curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" -H "Content-Type: application/json" -d "$JSON_PAYLOAD"
 
       - name: Job Summary
         if: always()
@@ -270,6 +211,5 @@ jobs:
           echo "- ROM: `${{ github.event.inputs.ROM_URL }}`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Total APKs Found: `${{ steps.extract.outputs.total_apks }}`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Job Status: `${{ job.status }}`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Rclone enabled: `${{ steps.rclone_flag.outputs.has_rclone }}`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Remote folder: `${{ steps.rclup.outputs.dest || 'N/A' }}`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Public link: `${{ steps.link.outputs.url || 'N/A' }}`" >> "$GITHUB_STEP_SUMMARY"
