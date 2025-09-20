@@ -73,29 +73,62 @@ jobs:
             autoconf automake libtool pkg-config build-essential \
             libfuse3-dev liblz4-dev libzstd-dev liblzma-dev libselinux1-dev ca-certificates
 
-      - name: Build & install erofs-utils (autotools)
-        run: |
-          set -euo pipefail
-          git clone --depth=1 https://github.com/erofs/erofs-utils.git
-          cd erofs-utils
-          ./autogen.sh
-          # try full features; if microlzma missing, retry without it
-          set +e
-          ./configure --enable-fuse --enable-lz4 --enable-lzma --with-libzstd
-          rc=$?
-          if [ $rc -ne 0 ]; then
-            echo "configure failed (likely microlzma). Retrying without microlzma..."
-            ./configure --enable-fuse --enable-lz4 --enable-lzma --with-libzstd --disable-microlzma
-            rc=$?
-          fi
-          set -e
-          if [ $rc -ne 0 ]; then
-            echo "configure still failed"; exit 1
-          fi
-          make -j"$(nproc)"
-          sudo make install
-          command -v extract.erofs >/dev/null
-          command -v erofsfuse   >/dev/null
+  
+- name: Build & install erofs-utils (robust: meson w/o microlzma, then autotools+new xz fallback)
+  run: |
+    set -euo pipefail
+
+    # deps for both build paths
+    sudo apt-get update
+    sudo apt-get install -y --no-install-recommends \
+      build-essential meson ninja-build pkg-config \
+      autoconf automake libtool \
+      libfuse3-dev liblz4-dev libzstd-dev liblzma-dev libselinux1-dev ca-certificates git
+
+    git clone --depth=1 https://github.com/erofs/erofs-utils.git
+    cd erofs-utils
+
+    # -------- PATH A: Meson (prefer) – try to disable microlzma so we can use system liblzma 5.2.x
+    echo "[*] Trying Meson build without microlzma..."
+    set +e
+    meson setup build -Dbuildtype=release -Dfuse=true -Dliblz4=true -Dlibzstd=true -Dliblzma=true -Dmicrolzma=false
+    MESON_RC=$?
+    set -e
+    if [ $MESON_RC -eq 0 ]; then
+      ninja -C build
+      sudo ninja -C build install
+    else
+      echo "[!] Meson path failed or microlzma option not supported. Falling back to autotools + newer xz..."
+
+      # -------- Install newer xz (liblzma >= 5.4, provides microlzma encoder)
+      cd ..
+      curl -fsSL https://tukaani.org/xz/xz-5.4.6.tar.xz -o xz.tar.xz
+      tar -xf xz.tar.xz
+      cd xz-5.4.6
+      ./configure --enable-shared
+      make -j"$(nproc)"
+      sudo make install
+      sudo ldconfig
+      ldd --version || true
+      xz --version  || true
+
+      # -------- Autotools build of erofs-utils against the new liblzma
+      cd ..
+      rm -rf erofs-utils
+      git clone --depth=1 https://github.com/erofs/erofs-utils.git
+      cd erofs-utils
+
+      ./autogen.sh
+      ./configure --enable-fuse --enable-lz4 --enable-lzma --with-libzstd
+      make -j"$(nproc)"
+      sudo make install
+    fi
+
+    # sanity checks
+    command -v extract.erofs >/dev/null || { echo "extract.erofs not found"; exit 1; }
+    command -v erofsfuse   >/dev/null || { echo "erofsfuse not found"; exit 1; }
+    extract.erofs -V || true
+    erofsfuse -V   || true
 
       - name: Setup Python venv + 5ec1cff/payload-dumper
         run: |
