@@ -90,7 +90,6 @@ jobs:
             # Check for EROFS magic number and extract files
             if [ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$raw_image")" = "e0f5e1e2" ]; then
               echo "EROFS filesystem detected. Extracting files to 'extracted_files' directory..."
-              # Removed sudo as it can cause path issues and is not necessary
               if extract.erofs -i "$raw_image" -o extracted_files/ -T0 -x; then
                 echo "Successfully extracted files from $partition_name."
               else
@@ -111,7 +110,7 @@ jobs:
           RCLONE_DESTINATION: ${{ secrets.RCLONE_DESTINATION }}
         run: |
           if [ -z "$RCLONE_CONF" ] || [ -z "$RCLONE_DESTINATION" ]; then
-            echo "RCLONE_CONF or RCLONE_DESTINATION secret is not set. Skipping upload."
+            echo "RCLONE_CONF or RCLONE_DESTINATION secret is not set. Skipping."
             exit 0
           fi
           
@@ -123,17 +122,25 @@ jobs:
           REMOTE_FOLDER_NAME=$(echo "$ROM_FILENAME" | sed 's/\.zip$//')
           FINAL_DESTINATION="${RCLONE_DESTINATION}/Rom/${REMOTE_FOLDER_NAME}"
           
-          # Set variables as output for the next step
           echo "ROM_FILENAME=${ROM_FILENAME}" >> $GITHUB_OUTPUT
           echo "FINAL_DESTINATION=${FINAL_DESTINATION}" >> $GITHUB_OUTPUT
           
           echo "Uploading 'extracted_files' folder to ${FINAL_DESTINATION}..."
           rclone copy ./extracted_files/ "${FINAL_DESTINATION}" -P --drive-chunk-size 64M --transfers 16
           echo "Upload complete."
+
+      # Step 8: Generate Public Link
+      - name: Generate Public Link
+        id: generate_link
+        if: steps.rclone_upload.outcome == 'success'
+        run: |
+          PUBLIC_LINK=$(rclone link "${{ steps.rclone_upload.outputs.FINAL_DESTINATION }}")
+          echo "Public link: $PUBLIC_LINK"
+          echo "PUBLIC_LINK=$PUBLIC_LINK" >> $GITHUB_OUTPUT
           
-      # Step 8: Send Telegram Notification
+      # Step 9: Send Telegram Notification
       - name: Send Telegram Notification
-        if: success() # Only run if previous steps succeed
+        if: success() # Only run if all previous steps succeed
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -143,7 +150,8 @@ jobs:
             
             **File ROM:** `${{ steps.rclone_upload.outputs.ROM_FILENAME }}`
             
-            Các file đã được tải lên thư mục sau trên cloud của bạn:
-            `${{ steps.rclone_upload.outputs.FINAL_DESTINATION }}`
+            **Thư mục:** `${{ steps.rclone_upload.outputs.FINAL_DESTINATION }}`
+            
+            **Link truy cập:** ${{ steps.generate_link.outputs.PUBLIC_LINK }}
           format: markdown
 
