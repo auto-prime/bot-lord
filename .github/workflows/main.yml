@@ -44,54 +44,51 @@ jobs:
       # 2) Install dependencies
       - name: Install Dependencies
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             aria2 android-sdk-libsparse-utils p7zip-full python3-pip git rclone bsdmainutils erofs-utils
           pip3 install --no-cache-dir git+https://github.com/5ec1cff/payload-dumper
-          DUMP_EROFS_PATH="$(command -v dump.erofs || true)"
-          echo "DUMP_EROFS_PATH=${DUMP_EROFS_PATH}" >> "$GITHUB_ENV"
-          echo "dump.erofs path: ${DUMP_EROFS_PATH}"
+          # FIX: Find the correct tool for extraction
+          EXTRACT_EROFS_PATH="$(command -v extract.erofs || true)"
+          echo "EXTRACT_EROFS_PATH=${EXTRACT_EROFS_PATH}" >> "$GITHUB_ENV"
 
       # 3) Set timezone
       - name: Set Vietnam Timezone
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           sudo timedatectl set-timezone Asia/Ho_Chi_Minh || true
-          date
+          echo "Current time: $(date)"
 
       # 4) Download ROM
       - name: Download ROM
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           echo "Downloading ROM from: ${{ github.event.inputs.ROM_URL }}"
           aria2c -x16 -s16 -j5 --file-allocation=none -o rom.zip "${{ github.event.inputs.ROM_URL }}"
-          ls -lh rom.zip
 
       # 5) Dump partitions from payload.bin
       - name: Dump Partitions from payload.bin
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           echo "Partitions to dump: '${{ github.event.inputs.PARTITIONS }}'"
           payload_dumper --out dumped_partitions --partitions "${{ github.event.inputs.PARTITIONS }}" rom.zip
-          echo "Dumped files:"
-          ls -lh dumped_partitions || true
 
       # 6) Extract files from EROFS images
       - name: Extract Files from Partition Images
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           mkdir -p extracted_files
 
           is_erofs() {
             local img="$1"
-            # FIX: Removed unnecessary backslash before the double quotes
             [ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$img")" = "e0f5e1e2" ]
           }
 
-          DUMP_EROFS="${DUMP_EROFS_PATH:-$(command -v dump.erofs || true)}"
-          if [ -z "${DUMP_EROFS}" ]; then
-            echo "WARNING: dump.erofs not found. EROFS partitions will NOT be extracted."
+          # FIX: Use the correct tool path
+          EXTRACT_EROFS="${EXTRACT_EROFS_PATH:-$(command -v extract.erofs || true)}"
+          if [ -z "${EXTRACT_EROFS}" ]; then
+            echo "WARNING: extract.erofs not found. EROFS partitions will NOT be extracted."
           fi
 
           echo "Starting extraction..."
@@ -101,14 +98,14 @@ jobs:
             echo "--- Processing ${partition_name} ---"
             if is_erofs "$img_file"; then
               echo "EROFS detected for ${partition_name}"
-              if [ -n "${DUMP_EROFS}" ]; then
-                # REVERT: Extract files to subdirectories named after the partition
+              if [ -n "${EXTRACT_EROFS}" ]; then
                 out_dir="extracted_files/${partition_name}"
                 mkdir -p "${out_dir}"
-                "${DUMP_EROFS}" -x -i "$img_file" -o "${out_dir}"
+                # FIX: Use the correct tool (extract.erofs) and remove the invalid -x flag
+                "${EXTRACT_EROFS}" -i "$img_file" -o "${out_dir}"
                 echo "Extracted to ${out_dir}"
               else
-                echo "dump.erofs missing → copying raw image."
+                echo "extract.erofs missing → copying raw image."
                 cp -f "$img_file" "extracted_files/${partition_name}.img"
               fi
             else
@@ -124,7 +121,7 @@ jobs:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
           RCLONE_DESTINATION: ${{ secrets.RCLONE_DESTINATION }}
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           if [ -z "${RCLONE_CONF:-}" ] || [ -z "${RCLONE_DESTINATION:-}" ]; then
             echo "RCLONE_CONF or RCLONE_DESTINATION not set. Skipping upload."
             echo "ROM_FILENAME=" >> "$GITHUB_OUTPUT"
@@ -143,19 +140,17 @@ jobs:
           echo "FINAL_DESTINATION=${FINAL_DESTINATION}" >> "$GITHUB_OUTPUT"
 
           echo "Uploading 'extracted_files' → ${FINAL_DESTINATION}"
-          rclone copy ./extracted_files/ "${FINAL_DESTINATION}" -P --drive-chunk-size 64M --transfers 16
+          rclone copy -v ./extracted_files/ "${FINAL_DESTINATION}" --drive-chunk-size 64M --transfers 16
 
       # 8) Generate masked public link
       - name: Generate and Mask Public Link
         id: generate_link
         if: ${{ steps.rclone_upload.outcome == 'success' && steps.rclone_upload.outputs.FINAL_DESTINATION != '' }}
         run: |
-          set -euxo pipefail
-          # FIX: Add flags for OneDrive/SharePoint to create a working public link
+          set -euo pipefail
           PUBLIC_LINK="$(rclone link --onedrive-link-type view --onedrive-link-scope anonymous "${{ steps.rclone_upload.outputs.FINAL_DESTINATION }}")" || PUBLIC_LINK="Failed to create link."
           echo "::add-mask::${PUBLIC_LINK}"
           echo "PUBLIC_LINK=${PUBLIC_LINK}" >> "$GITHUB_OUTPUT"
-          echo "Public link generated (masked in logs)."
 
       # 9) Telegram notify
       - name: Send Telegram Notification
