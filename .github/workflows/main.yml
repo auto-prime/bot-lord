@@ -31,7 +31,17 @@ jobs:
     env:
       TZ: Asia/Ho_Chi_Minh
     steps:
-      # 1) Clean runner space
+      # 1a) Manual Clean Up
+      - name: Manual Clean Up
+        run: |
+          docker rmi `docker images -q` || true
+          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/sudo apt/sources.list.d || true
+          sudo apt -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* mysql* php* || true
+          sudo apt -y autoremove --purge || true
+          sudo apt -y autoclean || true
+          sudo apt clean || true
+      
+      # 1b) Clean runner space using action
       - name: Clean Runner Space
         uses: easimon/maximize-build-space@master
         with:
@@ -49,7 +59,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             aria2 android-sdk-libsparse-utils p7zip-full python3-pip git rclone bsdmainutils erofs-utils
           pip3 install --no-cache-dir git+https://github.com/5ec1cff/payload-dumper
-          # FIX: Find the correct tool for extraction
           EXTRACT_EROFS_PATH="$(command -v extract.erofs || true)"
           echo "EXTRACT_EROFS_PATH=${EXTRACT_EROFS_PATH}" >> "$GITHUB_ENV"
 
@@ -85,7 +94,6 @@ jobs:
             [ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$img")" = "e0f5e1e2" ]
           }
 
-          # FIX: Use the correct tool path
           EXTRACT_EROFS="${EXTRACT_EROFS_PATH:-$(command -v extract.erofs || true)}"
           if [ -z "${EXTRACT_EROFS}" ]; then
             echo "WARNING: extract.erofs not found. EROFS partitions will NOT be extracted."
@@ -101,7 +109,6 @@ jobs:
               if [ -n "${EXTRACT_EROFS}" ]; then
                 out_dir="extracted_files/${partition_name}"
                 mkdir -p "${out_dir}"
-                # FIX: Use the correct tool (extract.erofs) and remove the invalid -x flag
                 "${EXTRACT_EROFS}" -i "$img_file" -o "${out_dir}"
                 echo "Extracted to ${out_dir}"
               else
