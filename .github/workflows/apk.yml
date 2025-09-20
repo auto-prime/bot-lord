@@ -1,4 +1,4 @@
-name: HIon APK Extractor
+name: APK
 
 on:
   workflow_dispatch:
@@ -102,36 +102,27 @@ jobs:
           set -euo pipefail
           . venv/bin/activate
           
-          if [ -f "dump_partition_list.txt" ]; then
-             PARTITIONS_TO_DUMP=$(grep -vE '^\s*#|^\s*$' dump_partition_list.txt | tr '\n' ',' | sed 's/,$//')
-             echo "[*] Dumping partitions from list: $PARTITIONS_TO_DUMP"
-             python3 -m payload_dumper --out out_imgs --partitions "$PARTITIONS_TO_DUMP" work/payload.bin
-          else
-             echo "[*] dump_partition_list.txt not found. Dumping ALL partitions."
-             python3 -m payload_dumper --out out_imgs work/payload.bin
-          fi
+          # Use the hardcoded list of partitions provided by the user
+          PARTITIONS_TO_DUMP="my_bigball,my_carrier,my_engineering,my_heytap,my_manifest,my_product,my_region,my_company,my_stock,my_preload,odm,product,system,system_ext,vendor"
+          echo "[*] Dumping partitions from hardcoded list: $PARTITIONS_TO_DUMP"
+          python3 -m payload_dumper --out out_imgs --partitions "$PARTITIONS_TO_DUMP" work/payload.bin
+          
           echo "[✓] Dumping finished. Image list:"
           ls -lah out_imgs
 
       - name: Extract APKs
         id: extract
         run: |
-          if [ -f "dump_partition_list.txt" ]; then
-            PART_LIST=$(grep -vE '^\s*#|^\s*$' dump_partition_list.txt | tr '\n' ' ' | sed 's/ $//')
-            export PARTITION_LIST_FROM_FILE="$PART_LIST"
-          else
-            export PARTITION_LIST_FROM_FILE=""
-          fi
-          
+          # The logic for reading dump_partition_list.txt has been removed.
+          # The script below now uses a hardcoded list directly.
           bash -c "$(cat <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
           OUT_IMG_DIR="out_imgs"; OUT_APK_DIR="out_apks"; MOUNT_ROOT="/mnt/payload_mounts"; APK_SUBDIRS=("app" "priv-app")
-          if [ -n "$PARTITION_LIST_FROM_FILE" ]; then
-              read -r -a CANDIDATE_PARTS <<< "$PARTITION_LIST_FROM_FILE"
-          else
-              CANDIDATE_PARTS=("system" "product" "system_ext" "vendor" "odm" "oem" "my_product")
-          fi
+          
+          # Use the new hardcoded list of partitions
+          CANDIDATE_PARTS=("my_bigball" "my_carrier" "my_engineering" "my_heytap" "my_manifest" "my_product" "my_region" "my_company" "my_stock" "my_preload" "odm" "product" "system" "system_ext" "vendor")
+
           is_sparse() { file -b "$1" 2>/dev/null | grep -qi "Android sparse image"; }; is_erofs() { [[ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$1" 2>/dev/null || true)" == "e0f5e1e2" ]]; }
           safe_umount() { if mountpoint -q "$1"; then sudo umount "$1" || true; fi; }; cleanup() { for d in "$MOUNT_ROOT"/*; do [[ -d "$d" ]] && safe_umount "$d"; done; }; trap cleanup EXIT
           shopt -s nullglob; for IMG in "$OUT_IMG_DIR"/*.img; do if is_sparse "$IMG"; then RAW="${IMG%.img}.raw.img"; simg2img "$IMG" "$RAW" && mv -f "$RAW" "$IMG"; fi; done; shopt -u nullglob
