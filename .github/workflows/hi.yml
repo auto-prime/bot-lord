@@ -1,4 +1,4 @@
-name: HI
+name: HIon APK Extractor
 
 on:
   workflow_dispatch:
@@ -105,11 +105,9 @@ jobs:
           if [ -f "dump_partition_list.txt" ]; then
              PARTITIONS_TO_DUMP=$(grep -vE '^\s*#|^\s*$' dump_partition_list.txt | tr '\n' ',' | sed 's/,$//')
              echo "[*] Dumping partitions from list: $PARTITIONS_TO_DUMP"
-             # FIX: Use correct argument --out (two dashes)
              python3 -m payload_dumper --out out_imgs --partitions "$PARTITIONS_TO_DUMP" work/payload.bin
           else
              echo "[*] dump_partition_list.txt not found. Dumping ALL partitions."
-             # FIX: Use correct argument --out (two dashes)
              python3 -m payload_dumper --out out_imgs work/payload.bin
           fi
           echo "[✓] Dumping finished. Image list:"
@@ -146,8 +144,32 @@ jobs:
                   if [ -d "$SRC_DIR" ]; then REL_PATH=$(realpath --relative-to="$search_root" "$SRC_DIR"); DEST_DIR="$DEST_PART_DIR/$REL_PATH"; mkdir -p "$DEST_DIR"; rsync -a --include="*.apk" --exclude="*" "$SRC_DIR/" "$DEST_DIR/"; fi
                 done; done
             }
-            if is_erofs "$IMG"; then EXDIR="$MOUNT_ROOT/${PART}_erofs_dump"; mkdir -p "$EXDIR"; extract.erofs -i "$IMG" -x -o "$EXDIR" &>/dev/null; scan_and_copy_apks "$EXDIR"; rm -rf "$EXDIR"
-            else MP="$MOUNT_ROOT/$PART"; mkdir -p "$MP"; if ! sudo mount -o ro,loop "$IMG" "$MP"; then rmdir "$MP" || true; continue; fi; scan_and_copy_apks "$MP"; safe_umount "$MP"; rmdir "$MP" || true; fi
+            if is_erofs "$IMG"; then
+              echo "    -> EROFS filesystem detected."
+              if ! command -v extract.erofs &> /dev/null; then
+                  echo "    -> FATAL: 'extract.erofs' command not found, but is required for this partition."
+                  echo "    -> Please check if the 'erofs-utils' package was installed correctly."
+                  exit 1
+              fi
+              EXDIR="$MOUNT_ROOT/${PART}_erofs_dump"
+              mkdir -p "$EXDIR"
+              echo "    -> Extracting with extract.erofs..."
+              extract.erofs -i "$IMG" -x -o "$EXDIR"
+              scan_and_copy_apks "$EXDIR"
+              rm -rf "$EXDIR"
+            else
+              echo "    -> ext4/raw filesystem detected. Mounting..."
+              MP="$MOUNT_ROOT/$PART"
+              mkdir -p "$MP"
+              if ! sudo mount -o ro,loop "$IMG" "$MP"; then
+                  echo "    -> Mount failed (likely not a data partition). Skipping."
+                  rmdir "$MP" || true
+                  continue
+              fi
+              scan_and_copy_apks "$MP"
+              safe_umount "$MP"
+              rmdir "$MP" || true
+            fi
           done; shopt -u nullglob
           EOF
           )"
@@ -219,3 +241,4 @@ jobs:
           echo "- Job Status: `${{ job.status }}`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Remote folder: `${{ steps.rclup.outputs.dest || 'N/A' }}`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Public link: `${{ steps.link.outputs.url || 'N/A' }}`" >> "$GITHUB_STEP_SUMMARY"
+
