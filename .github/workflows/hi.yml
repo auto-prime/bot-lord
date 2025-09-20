@@ -7,19 +7,19 @@ on:
         description: "Direct URL to ROM (.zip) or payload.bin"
         required: true
       PARTITIONS:
-        description: "Partitions to dump (e.g. system,product,system_ext). Empty = defaults to APK-bearing ones"
+        description: "Partitions (e.g. system,product,system_ext). Empty = defaults"
         required: false
         default: ""
       DEST_PATH:
-        description: "Destination path in your remote (e.g. dumps/oneplus/oneplus6t)"
+        description: "Remote path (e.g. dumps/oneplus/oneplus6t)"
         required: true
         default: "dumps/device/unknown"
       ADD_ROM_SUBFOLDER:
-        description: "Append a subfolder using ROM file stem (true/false)"
+        description: "Append subfolder using ROM file stem (true/false)"
         required: false
         default: "true"
       AUTH_KEY:
-        description: "Password to run (compared to WORKFLOW_AUTH_KEY secret)"
+        description: "Password to run (compared to WORKFLOW_AUTH_KEY)"
         required: true
 
 jobs:
@@ -37,7 +37,6 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       TZ: Asia/Ho_Chi_Minh
-      HAS_RCLONE: ${{ (secrets.RCLONE_CONF != '' && secrets.RCLONE_DESTINATION != '') && 'true' || 'false' }}
       APK_PARTS_DEFAULT: system,product,system_ext,vendor,odm,oem
     steps:
       - name: Checkout
@@ -53,19 +52,29 @@ jobs:
           remove-haskell: "true"
           remove-codeql: "true"
 
+      # Compute a simple flag to gate rclone steps (avoid secrets in if:)
+      - name: Check rclone secrets present
+        id: rclone_flag
+        run: |
+          set -euo pipefail
+          if [ -n "${{ secrets.RCLONE_CONF }}" ] && [ -n "${{ secrets.RCLONE_DESTINATION }}" ]; then
+            echo "has_rclone=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_rclone=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install base dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            aria2 unzip curl file rsync bsdmainutils \
+            aria2 unzip curl file rsync \
             android-sdk-libsparse-utils e2fsprogs util-linux fuse3 \
             python3 python3-venv python3-pip git \
-            autoconf automake libtool pkg-config \
-            build-essential \
+            autoconf automake libtool pkg-config build-essential \
             libfuse3-dev liblz4-dev libzstd-dev liblzma-dev libselinux1-dev ca-certificates
 
-      - name: Build & install erofs-utils (autotools: extract.erofs + erofsfuse)
+      - name: Build and install erofs-utils (autotools)
         run: |
           set -euo pipefail
           git clone --depth=1 https://github.com/erofs/erofs-utils.git
@@ -74,17 +83,14 @@ jobs:
           ./configure --enable-fuse --enable-lz4 --enable-lzma --with-libzstd
           make -j"$(nproc)"
           sudo make install
-          # Sanity checks
-          command -v extract.erofs >/dev/null || { echo "extract.erofs not found"; exit 1; }
-          command -v erofsfuse   >/dev/null || { echo "erofsfuse not found"; exit 1; }
-          extract.erofs -V || true
-          erofsfuse -V   || true
+          command -v extract.erofs >/dev/null
+          command -v erofsfuse   >/dev/null
 
       - name: Setup Python venv + 5ec1cff/payload-dumper
         run: |
           set -euo pipefail
           python3 -m venv venv
-          source venv/bin/activate
+          . venv/bin/activate
           pip install --upgrade pip wheel
           pip install git+https://github.com/5ec1cff/payload-dumper.git \
                       brotli zstandard pycryptodome tqdm
@@ -99,37 +105,32 @@ jobs:
           echo "URL: ${{ github.event.inputs.ROM_URL }}"
           aria2c -x16 -s16 -j5 --file-allocation=none -o rom.bin "${{ github.event.inputs.ROM_URL }}"
           if file -b rom.bin | grep -qi "Zip archive"; then
-            echo "[*] ZIP detected → unzip"
             unzip -q rom.bin -d romzip
             PBIN="$(find romzip -type f -name 'payload.bin' | head -n 1 || true)"
-            if [[ -z "$PBIN" ]]; then
-              echo "payload.bin not found in ZIP"
-              exit 1
-            fi
+            if [ -z "$PBIN" ]; then echo "payload.bin not found in ZIP"; exit 1; fi
             mv "$PBIN" payload.bin
           else
             mv rom.bin payload.bin
           fi
           ls -lah
 
-      - name: Dump partitions from payload.bin (5ec1cff)
+      - name: Dump partitions from payload.bin
         working-directory: work
         run: |
           set -euo pipefail
-          source ../venv/bin/activate
+          . ../venv/bin/activate
           mkdir -p out_imgs
           PARTS_INPUT="${{ github.event.inputs.PARTITIONS }}"
-          if [[ -z "$PARTS_INPUT" ]]; then
-            PARTS="$APK_PARTS_DEFAULT"
+          if [ -z "$PARTS_INPUT" ]; then
+            PARTS="${APK_PARTS_DEFAULT}"
           else
             PARTS="$PARTS_INPUT"
           fi
           echo "[*] Dump partitions: $PARTS"
           python -m payload_dumper --out out_imgs --partitions "$PARTS" payload.bin
-          echo "[*] Dumped images:"
           ls -lah out_imgs
 
-      - name: Extract APKs (EROFS/ext4 aware; erofsfuse fallback)
+      - name: Extract APKs (EROFS/ext4; erofsfuse fallback)
         run: |
           set -euo pipefail
           cat > scripts/apk_siphon.sh << 'EOF'
@@ -145,7 +146,7 @@ jobs:
 
           has(){ command -v "$1" >/dev/null 2>&1; }
           is_sparse(){ file -b "$1" 2>/dev/null | grep -qi "Android sparse image"; }
-          is_erofs(){ [[ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$1" 2>/dev/null || true)" == "e0f5e1e2" ]]; }
+          is_erofs(){ [[ "$(hexdump -s 1024 -n 4 -e '1/4 \"%08x\"' "$1" 2>/dev/null || true)" == "e0f5e1e2" ]]; }
 
           safe_umount(){
             local mp="$1"
@@ -160,7 +161,7 @@ jobs:
           for IMG in "$OUT_IMG_DIR"/*.img; do
             if is_sparse "$IMG"; then
               RAW="${IMG%.img}.raw.img"
-              echo "→ $(basename "$IMG") is sparse → simg2img"
+              echo "sparse -> simg2img: $(basename "$IMG")"
               simg2img "$IMG" "$RAW" && mv "$RAW" "$IMG"
             fi
           done
@@ -170,14 +171,13 @@ jobs:
 
           for IMG in "$OUT_IMG_DIR"/*.img; do
             PART="$(basename "$IMG" .img)"
-            [[ -n "${WANT[$PART]:-}" ]] || { echo "--- [$PART] (skip: not APK-bearing) ---"; continue; }
+            [[ -n "${WANT[$PART]:-}" ]] || { echo "skip $PART"; continue; }
 
             echo "--- [$PART] ---"
             if is_erofs "$IMG"; then
               if has extract.erofs; then
                 EXDIR="$OUT_APK_DIR/$PART/_fs"
                 mkdir -p "$EXDIR"
-                echo "   EROFS: extract.erofs → $EXDIR"
                 extract.erofs -i "$IMG" -x -o "$EXDIR"
                 for d in "${APK_DIRS[@]}"; do
                   SRC="$EXDIR/$d"; [[ -d "$SRC" ]] || continue
@@ -188,7 +188,6 @@ jobs:
               elif has erofsfuse; then
                 MP="$MOUNT_ROOT/$PART"
                 mkdir -p "$MP"
-                echo "   EROFS: erofsfuse → $MP"
                 erofsfuse "$IMG" "$MP"
                 for d in "${APK_DIRS[@]}"; do
                   SRC="$MP/$d"; [[ -d "$SRC" ]] || continue
@@ -198,14 +197,13 @@ jobs:
                 safe_umount "$MP"
                 rmdir "$MP" || true
               else
-                echo "   ! Neither extract.erofs nor erofsfuse found — this should not happen"
-                exit 1
+                echo "no erofs tool found"; exit 1
               fi
             else
               MP="$MOUNT_ROOT/$PART"
               mkdir -p "$MP"
               if ! sudo mount -o ro,loop "$IMG" "$MP"; then
-                echo "   ! mount failed → skip $PART"
+                echo "mount failed: $PART"
                 rmdir "$MP" || true
                 continue
               fi
@@ -222,11 +220,10 @@ jobs:
           chmod +x scripts/apk_siphon.sh
           ./scripts/apk_siphon.sh
           echo "APK count: $(find work/out_apks -type f -name '*.apk' | wc -l || true)"
-          echo "[*] Sample tree:"
           find work/out_apks -maxdepth 3 -type d | head -n 50 || true
 
       - name: Setup rclone (OneDrive)
-        if: ${{ env.HAS_RCLONE == 'true' }}
+        if: ${{ steps.rclone_flag.outputs.has_rclone == 'true' }}
         run: |
           set -euo pipefail
           curl -fsSL https://rclone.org/install.sh | sudo bash
@@ -236,7 +233,7 @@ jobs:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
 
       - name: Upload APK folder to OneDrive (preserve tree)
-        if: ${{ env.HAS_RCLONE == 'true' }}
+        if: ${{ steps.rclone_flag.outputs.has_rclone == 'true' }}
         id: rclup
         working-directory: work
         env:
@@ -246,12 +243,11 @@ jobs:
           ROM_URL: ${{ github.event.inputs.ROM_URL }}
         run: |
           set -euo pipefail
-          set -x
           ROM_BASE="$(basename "$ROM_URL")"
           ROM_STEM="${ROM_BASE%.*}"
           DEST_PATH_INPUT="${DEST_PATH_INPUT#/}"
           DEST_PATH_INPUT="${DEST_PATH_INPUT%/}"
-          if [[ "$ADD_ROM_SUBFOLDER" == "true" ]]; then
+          if [ "$ADD_ROM_SUBFOLDER" = "true" ]; then
             DEST="${BASE%/}/${DEST_PATH_INPUT}/${ROM_STEM}/"
           else
             DEST="${BASE%/}/${DEST_PATH_INPUT}/"
@@ -262,10 +258,9 @@ jobs:
           APK_COUNT=$(find out_apks -type f -name '*.apk' | wc -l || true)
           printf 'APK files: %s\n' "$APK_COUNT" > /tmp/INDEX.txt
           rclone copy /tmp/INDEX.txt "$DEST"
-          echo "Uploaded to: $DEST"
 
       - name: Public link for APK folder (best-effort)
-        if: ${{ env.HAS_RCLONE == 'true' }}
+        if: ${{ steps.rclone_flag.outputs.has_rclone == 'true' }}
         id: link
         run: |
           set -euo pipefail
@@ -281,5 +276,6 @@ jobs:
           echo "- PARTITIONS: \`${{ github.event.inputs.PARTITIONS || env.APK_PARTS_DEFAULT }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- DEST_PATH: \`${{ github.event.inputs.DEST_PATH }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- ADD_ROM_SUBFOLDER: \`${{ github.event.inputs.ADD_ROM_SUBFOLDER }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Rclone enabled: \`${{ steps.rclone_flag.outputs.has_rclone }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- OneDrive APK folder: \`${{ steps.rclup.outputs.dest || 'N/A' }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Public link: \`${{ steps.link.outputs.url || 'N/A' }}\`" >> "$GITHUB_STEP_SUMMARY"
