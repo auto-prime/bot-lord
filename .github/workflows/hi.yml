@@ -1,4 +1,5 @@
 name: HI
+
 on:
   workflow_dispatch:
     inputs:
@@ -59,7 +60,6 @@ jobs:
           else
             echo "has_rclone=false" >> "$GITHUB_OUTPUT"
           fi
-
       - name: Install dependencies
         run: |
           set -euo pipefail
@@ -69,7 +69,6 @@ jobs:
             android-sdk-libsparse-utils e2fsprogs util-linux fuse3 \
             erofs-utils \
             python3 python3-venv python3-pip git
-
       - name: Setup Python venv + payload-dumper (5ec1cff)
         run: |
           set -euo pipefail
@@ -78,7 +77,6 @@ jobs:
           pip install --upgrade pip wheel
           pip install git+https://github.com/5ec1cff/payload-dumper.git \
                       brotli zstandard pycryptodome tqdm
-
       - name: Prepare workspace
         run: mkdir -p work out_imgs out_apks scripts /mnt/payload_mounts
 
@@ -97,7 +95,6 @@ jobs:
             mv rom.bin payload.bin
           fi
           ls -lah
-
       - name: Dump partitions from payload.bin
         working-directory: work
         run: |
@@ -113,7 +110,6 @@ jobs:
             python -m payload_dumper --out out_imgs --partitions "$PARTS_INPUT" payload.bin
           fi
           ls -lah out_imgs
-
       - name: Extract APKs (EROFS/ext4)
         run: |
           set -euo pipefail
@@ -198,7 +194,6 @@ jobs:
           ./scripts/apk_siphon.sh
           echo "APK count: $(find work/out_apks -type f -name '*.apk' | wc -l || true)"
           find work/out_apks -maxdepth 3 -type d | head -n 50 || true
-
       - name: Setup rclone (OneDrive)
         if: ${{ steps.rclone_flag.outputs.has_rclone == 'true' }}
         run: |
@@ -235,7 +230,6 @@ jobs:
           APK_COUNT=$(find out_apks -type f -name '*.apk' | wc -l || true)
           printf 'APK files: %s\n' "$APK_COUNT" > /tmp/INDEX.txt
           rclone copy /tmp/INDEX.txt "$DEST"
-
       - name: Public link for APK folder (best-effort)
         if: ${{ steps.rclone_flag.outputs.has_rclone == 'true' }}
         id: link
@@ -244,7 +238,6 @@ jobs:
           LINK="$(rclone link --onedrive-link-type view --onedrive-link-scope anonymous "${{ steps.rclup.outputs.dest }}" 2>/dev/null || true)"
           [ -n "$LINK" ] && echo "::add-mask::$LINK"
           echo "url=${LINK:-N/A}" >> "$GITHUB_OUTPUT"
-
       - name: Job Summary
         if: always()
         run: |
@@ -256,38 +249,3 @@ jobs:
           echo "- Rclone enabled: `${{ steps.rclone_flag.outputs.has_rclone }}`" >> "$GITHUB_STEP_SUMMARY"
           echo "- OneDrive APK folder: `${{ steps.rclup.outputs.dest || 'N/A' }}`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Public link: `${{ steps.link.outputs.url || 'N/A' }}`" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Send success notification to Telegram
-        if: success() && steps.link.outputs.url != 'N/A' && steps.link.outputs.url != ''
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.TELEGRAM_TO }}
-          token: ${{ secrets.TELEGRAM_TOKEN }}
-          format: markdown
-          message: |
-            ✅ *Dump Thành Công!*
-
-            **ROM:** `${{ github.event.inputs.ROM_URL }}`
-            **Đường dẫn:** `${{ steps.rclup.outputs.dest }}`
-          reply_markup: |
-            {
-              "inline_keyboard": [[
-                {
-                  "text": "HOÀN THÀNH",
-                  "url": "${{ steps.link.outputs.url }}"
-                }
-              ]]
-            }
-      
-      - name: Send failure notification to Telegram
-        if: failure() || cancelled()
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.TELEGRAM_TO }}
-          token: ${{ secrets.TELEGRAM_TOKEN }}
-          format: markdown
-          message: |
-            ❌ *Dump Thất Bại!*
-
-            **ROM:** `${{ github.event.inputs.ROM_URL }}`
-            **Xem Logs:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
