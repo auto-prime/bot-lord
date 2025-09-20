@@ -72,12 +72,11 @@ jobs:
         run: |
           set -euo pipefail
           echo "[*] Building erofs-utils from source for maximum reliability..."
-          # FIX: Use the official GitHub mirror for erofs-utils
           git clone https://github.com/erofs/erofs-utils.git
           cd erofs-utils
           ./autogen.sh
-          # Explicitly enable FUSE support to ensure the necessary tools are built
-          ./configure --prefix=/usr --enable-fuse
+          # FIX: Remove --prefix to install to the standard /usr/local/bin, which is more reliable
+          ./configure --enable-fuse
           make -j$(nproc)
           sudo make install
           echo "[✓] erofs-utils build process completed."
