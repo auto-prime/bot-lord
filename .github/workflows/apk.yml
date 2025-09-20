@@ -51,7 +51,7 @@ jobs:
       - name: Check rclone secrets present
         id: rclone_flag
         run: |
-          if [ -n "${{ secrets.RCLONE_CONF }}" ] && [ -n "${{ secrets.RCLONE_DESTINATION }}" ]; then
+          if [ -n "${{ secrets.Rclone_CONF }}" ] && [ -n "${{ secrets.Rclone_DESTINATION }}" ]; then
             echo "has_rclone=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_rclone=false" >> "$GITHUB_OUTPUT"
@@ -67,14 +67,13 @@ jobs:
             erofs-utils \
             python3 python3-venv python3-pip git
 
-      - name: Setup Python venv + payload-dumper (5ec1cff)
+      - name: Setup Python venv + payload-dumper
         run: |
           set -euo pipefail
           python3 -m venv venv
           . venv/bin/activate
           pip install --upgrade pip wheel
-          # FIX: Reverting to the proven pip install method from the reference file
-          pip install git+https://github.com/5ec1cff/payload_dumper.git \
+          pip install git+https://github.com/auto-prime/payload-dumper.git \
                       brotli zstandard pycryptodome tqdm
 
       - name: Prepare workspace
@@ -167,13 +166,13 @@ jobs:
         run: |
           curl -fsSL https://rclone.org/install.sh | sudo bash
           mkdir -p ~/.config/rclone
-          printf '%s\n' "${{ secrets.RCLONE_CONF }}" > ~/.config/rclone/rclone.conf
+          printf '%s\n' "${{ secrets.Rclone_CONF }}" > ~/.config/rclone/rclone.conf
       
       - name: Upload APK folder
         if: steps.rclone_flag.outputs.has_rclone == 'true'
         id: rclup
         env:
-          BASE: ${{ secrets.RCLONE_DESTINATION }}
+          BASE: ${{ secrets.Rclone_DESTINATION }}
         run: |
           ROM_BASE="$(basename "${{ github.event.inputs.ROM_URL }}")"; ROM_STEM="${ROM_BASE%.*}"
           DEST_PATH_INPUT="${{ github.event.inputs.DEST_PATH }}"; DEST_PATH_INPUT="${DEST_PATH_INPUT#/}"; DEST_PATH_INPUT="${DEST_PATH_INPUT%/}"
