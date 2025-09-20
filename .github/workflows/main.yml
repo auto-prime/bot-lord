@@ -73,29 +73,31 @@ jobs:
       # 6) Extract files from partition images
       - name: Extract Files from Partition Images
         run: |
-          # Removed 'set -euo pipefail' to prevent 'unbound variable' error
           mkdir -p extracted_files
           is_erofs() {
             local img="$1"
             # Redirect stderr to /dev/null to suppress errors from non-image files
             [ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$img" 2>/dev/null)" = "e0f5e1e2" ]
           }
-          # This tool should be available in the path after installing erofs-utils
-          # We'll rely on the PATH environment variable
+          
           echo "Starting extraction..."
           shopt -s nullglob
           for img_file in dumped_partitions/*.img; do
             partition_name="$(basename "$img_file" .img)"
             echo "--- Processing ${partition_name} ---"
+            
             if is_erofs "$img_file"; then
               echo "EROFS detected for ${partition_name}"
-              if [ -n "${EXTRACT_EROFS}" ]; then
+              # Correctly check if the extract.erofs command is available
+              if command -v extract.erofs &> /dev/null; then
                 out_dir="extracted_files/${partition_name}"
                 mkdir -p "${out_dir}"
-                mkfs.erofs -i "$img_file" -o "${out_dir}"
+                echo "Extracting with extract.erofs..."
+                # Use the correct command 'extract.erofs' to extract files
+                extract.erofs -i "$img_file" -x -o "${out_dir}"
                 echo "Extracted to ${out_dir}"
               else
-                echo "extract.erofs missing → copying raw image."
+                echo "extract.erofs tool not found → copying raw image."
                 cp -f "$img_file" "extracted_files/${partition_name}.img"
               fi
             else
