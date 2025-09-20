@@ -37,6 +37,8 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       TZ: Asia/Ho_Chi_Minh
+      # Compute a boolean-like flag once (as a string) to gate rclone steps later
+      HAS_RCLONE: ${{ (secrets.RCLONE_CONF != '' && secrets.RCLONE_DESTINATION != '') && 'true' || 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -162,7 +164,7 @@ jobs:
 
       # ---- UPLOAD ONLY THE APK FOLDER (preserving tree) ----
       - name: Setup rclone (OneDrive)
-        if: ${{ secrets.RCLONE_CONF && secrets.RCLONE_DESTINATION }}
+        if: ${{ env.HAS_RCLONE == 'true' }}
         run: |
           set -euo pipefail
           curl -fsSL https://rclone.org/install.sh | sudo bash
@@ -172,7 +174,7 @@ jobs:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
 
       - name: Upload APK folder to OneDrive
-        if: ${{ secrets.RCLONE_CONF && secrets.RCLONE_DESTINATION }}
+        if: ${{ env.HAS_RCLONE == 'true' }}
         id: rclup
         working-directory: work
         run: |
@@ -206,7 +208,7 @@ jobs:
           echo "Uploaded to: $DEST"
 
       - name: Public link for APK folder (best-effort)
-        if: ${{ steps.rclup.outputs.dest }}
+        if: ${{ env.HAS_RCLONE == 'true' }}
         id: link
         run: |
           set -euo pipefail
