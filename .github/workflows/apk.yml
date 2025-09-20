@@ -73,9 +73,8 @@ jobs:
           python3 -m venv venv
           . venv/bin/activate
           pip install --upgrade pip wheel
-          # FIX: Disable git's interactive terminal prompt to prevent auth errors on public repos
-          GIT_TERMINAL_PROMPT=0 git clone https://github.com/5ec1cff/payload_dumper.git
-          pip install ./payload_dumper \
+          # FIX: Reverting to the proven pip install method from the reference file
+          pip install git+https://github.com/5ec1cff/payload_dumper.git \
                       brotli zstandard pycryptodome tqdm
 
       - name: Prepare workspace
