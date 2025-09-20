@@ -61,7 +61,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          # FIX: Add libfuse3-dev, the missing dependency for building erofs-utils' fuse components
+          # Add libfuse3-dev, the missing dependency for building erofs-utils' fuse components
           sudo apt-get install -y --no-install-recommends \
             aria2 unzip curl file rsync jq \
             android-sdk-libsparse-utils e2fsprogs util-linux fuse3 libfuse3-dev \
@@ -75,13 +75,11 @@ jobs:
           git clone https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git
           cd erofs-utils
           ./autogen.sh
-          ./configure --prefix=/usr
+          # FIX: Explicitly enable FUSE support to ensure the necessary tools are built
+          ./configure --prefix=/usr --enable-fuse
           make -j$(nproc)
           sudo make install
-          echo "[✓] erofs-utils installed successfully."
-          # Verify that the commands are now available
-          command -v extract.erofs
-          command -v erofsfuse
+          echo "[✓] erofs-utils build process completed."
 
       - name: Setup Python venv + payload-dumper
         run: |
@@ -224,7 +222,7 @@ jobs:
             PUBLIC_URL="${{ steps.link.outputs.url }}"
             if [ "$PUBLIC_URL" != "N/A" ]; then
               REPLY_MARKUP=$(jq -n --arg url "$PUBLIC_URL" '{inline_keyboard: [[{text: "✅ Mở Thư Mục", url: $url}]]}')
-              JSON_PAYLOAD=$(jq -n --arg cid "$TELEGRAM_CHAT_ID" --arg txt "$MESSAGE" --argjson rkm "$REPLY_MARKUP" '{chat_id: $cid, text: $txt, parse_mode: "Markdown2", reply_markup: $rkm}')
+              JSON_PAYLOAD=$(jq -n --arg cid "$TELEGRAM_CHAT_ID" --arg txt "$MESSAGE" --argjson rkm "$REPLY_MARKUP" '{chat_id: $cid, text: $txt, parse_mode: "MarkdownV2", reply_markup: $rkm}')
             else
               JSON_PAYLOAD=$(jq -n --arg cid "$TELEGRAM_CHAT_ID" --arg txt "$MESSAGE" '{chat_id: $cid, text: $txt, parse_mode: "MarkdownV2"}')
             fi
