@@ -31,7 +31,7 @@ jobs:
     env:
       TZ: Asia/Ho_Chi_Minh
     steps:
-      # 1) Clean runner space (tùy chọn)
+      # 1) Clean runner space
       - name: Clean Runner Space
         uses: easimon/maximize-build-space@master
         with:
@@ -48,14 +48,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             aria2 android-sdk-libsparse-utils p7zip-full python3-pip git rclone bsdmainutils erofs-utils
-          # payload-dumper (5ec1cff)
           pip3 install --no-cache-dir git+https://github.com/5ec1cff/payload-dumper
-          # Save dump.erofs path (if present)
           DUMP_EROFS_PATH="$(command -v dump.erofs || true)"
           echo "DUMP_EROFS_PATH=${DUMP_EROFS_PATH}" >> "$GITHUB_ENV"
           echo "dump.erofs path: ${DUMP_EROFS_PATH}"
 
-      # 3) (Optional) Set timezone (runner thường đã cho phép)
+      # 3) Set timezone
       - name: Set Vietnam Timezone
         run: |
           set -euxo pipefail
@@ -79,24 +77,21 @@ jobs:
           echo "Dumped files:"
           ls -lh dumped_partitions || true
 
-      # 6) Extract files from EROFS images via dump.erofs (no sparse conversion)
+      # 6) Extract files from EROFS images
       - name: Extract Files from Partition Images
         run: |
           set -euxo pipefail
           mkdir -p extracted_files
 
-          # Detect EROFS: magic 0xE2E1F5E0 at offset 1024 (little-endian shows as e0f5e1e2)
           is_erofs() {
             local img="$1"
-            [ "$(hexdump -s 1024 -n 4 -e '1/4 \"%08x\"' "$img")" = "e0f5e1e2" ]
+            # FIX: Removed unnecessary backslash before the double quotes
+            [ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$img")" = "e0f5e1e2" ]
           }
 
           DUMP_EROFS="${DUMP_EROFS_PATH:-$(command -v dump.erofs || true)}"
-          if [ -n "${DUMP_EROFS}" ]; then
-            echo "Found dump.erofs: ${DUMP_EROFS}"
-            "${DUMP_EROFS}" -V || true
-          else
-            echo "WARNING: dump.erofs not found. EROFS partitions will NOT be extracted; will copy .img instead."
+          if [ -z "${DUMP_EROFS}" ]; then
+            echo "WARNING: dump.erofs not found. EROFS partitions will NOT be extracted."
           fi
 
           echo "Starting extraction..."
@@ -107,9 +102,9 @@ jobs:
             if is_erofs "$img_file"; then
               echo "EROFS detected for ${partition_name}"
               if [ -n "${DUMP_EROFS}" ]; then
+                # REVERT: Extract files to subdirectories named after the partition
                 out_dir="extracted_files/${partition_name}"
                 mkdir -p "${out_dir}"
-                # extract all contents
                 "${DUMP_EROFS}" -x -i "$img_file" -o "${out_dir}"
                 echo "Extracted to ${out_dir}"
               else
@@ -122,9 +117,6 @@ jobs:
             fi
           done
 
-          echo "Extraction done. Result tree (top-level only):"
-          find extracted_files -maxdepth 2 -mindepth 1 -type d -or -name '*.img' | sed 's/^/ - /'
-
       # 7) Configure rclone & upload
       - name: Set up Rclone and Upload Folder
         id: rclone_upload
@@ -135,7 +127,6 @@ jobs:
           set -euxo pipefail
           if [ -z "${RCLONE_CONF:-}" ] || [ -z "${RCLONE_DESTINATION:-}" ]; then
             echo "RCLONE_CONF or RCLONE_DESTINATION not set. Skipping upload."
-            # Still expose outputs for following steps (empty)
             echo "ROM_FILENAME=" >> "$GITHUB_OUTPUT"
             echo "FINAL_DESTINATION=" >> "$GITHUB_OUTPUT"
             exit 0
@@ -154,14 +145,14 @@ jobs:
           echo "Uploading 'extracted_files' → ${FINAL_DESTINATION}"
           rclone copy ./extracted_files/ "${FINAL_DESTINATION}" -P --drive-chunk-size 64M --transfers 16
 
-      # 8) Generate masked public link (if rclone upload succeeded & remote supports link)
+      # 8) Generate masked public link
       - name: Generate and Mask Public Link
         id: generate_link
         if: ${{ steps.rclone_upload.outcome == 'success' && steps.rclone_upload.outputs.FINAL_DESTINATION != '' }}
         run: |
           set -euxo pipefail
-          PUBLIC_LINK="$(rclone link "${{ steps.rclone_upload.outputs.FINAL_DESTINATION }}")" || PUBLIC_LINK=""
-          # mask link
+          # FIX: Add flags for OneDrive/SharePoint to create a working public link
+          PUBLIC_LINK="$(rclone link --onedrive-link-type view --onedrive-link-scope anonymous "${{ steps.rclone_upload.outputs.FINAL_DESTINATION }}")" || PUBLIC_LINK="Failed to create link."
           echo "::add-mask::${PUBLIC_LINK}"
           echo "PUBLIC_LINK=${PUBLIC_LINK}" >> "$GITHUB_OUTPUT"
           echo "Public link generated (masked in logs)."
@@ -190,3 +181,4 @@ jobs:
           echo "- PARTITIONS: \`${{ github.event.inputs.PARTITIONS }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Uploaded to: \`${{ steps.rclone_upload.outputs.FINAL_DESTINATION }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Public link: \`${{ steps.generate_link.outputs.PUBLIC_LINK }}\`" >> "$GITHUB_STEP_SUMMARY"
+
