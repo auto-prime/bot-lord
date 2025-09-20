@@ -4,14 +4,22 @@ on:
   workflow_dispatch:
     inputs:
       ROM_URL:
-        description: "Direct URL tới ROM (.zip) hoặc payload.bin"
+        description: "Direct URL to ROM (.zip) or payload.bin"
         required: true
       PARTITIONS:
-        description: "Phân vùng cần dump (vd: system,product,system_ext). Để trống = tất cả"
+        description: "Partitions to dump (e.g. system,product,system_ext). Empty = all"
         required: false
         default: ""
+      DEST_PATH:
+        description: "Destination path in your remote (e.g. dumps/oneplus/oneplus6t)"
+        required: true
+        default: "dumps/device/unknown"
+      ADD_ROM_SUBFOLDER:
+        description: "Append a subfolder using ROM file stem (true/false)"
+        required: false
+        default: "true"
       AUTH_KEY:
-        description: "Mật khẩu chạy workflow (so với WORKFLOW_AUTH_KEY)"
+        description: "Password to run (compared to WORKFLOW_AUTH_KEY secret)"
         required: true
 
 jobs:
@@ -23,7 +31,7 @@ jobs:
       - id: check
         run: echo "active=${{ github.event.inputs.AUTH_KEY == secrets.WORKFLOW_AUTH_KEY }}" >> "$GITHUB_OUTPUT"
 
-  dump_and_upload:
+  dump_apks_only:
     needs: auth_check
     if: ${{ needs.auth_check.outputs.active == 'true' }}
     runs-on: ubuntu-22.04
@@ -43,22 +51,21 @@ jobs:
           remove-haskell: "true"
           remove-codeql: "true"
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            aria2 unzip curl file rsync zstd lz4 brotli hexdump \
+            aria2 unzip curl file rsync bsdmainutils \
             android-sdk-libsparse-utils erofs-utils e2fsprogs util-linux \
             python3 python3-venv python3-pip git
-          # Fallback dumper (Python)
+          # Python fallback dumper
           python3 -m venv venv && source venv/bin/activate
           pip install --upgrade pip && pip install payload-dumper
           # payload-dumper-go (binary)
           cd /usr/local/bin
           curl -L -o payload-dumper-go https://github.com/ssut/payload-dumper-go/releases/latest/download/payload-dumper-go_linux_amd64
           chmod +x payload-dumper-go
-          payload-dumper-go -v || true
 
       - name: Prepare workspace
         run: mkdir -p work out_imgs out_apks scripts /mnt/payload_mounts
@@ -73,7 +80,7 @@ jobs:
             echo "[*] ZIP detected → unzip"
             unzip -q rom.bin -d romzip
             PBIN="$(find romzip -type f -name 'payload.bin' | head -n 1 || true)"
-            if [[ -z "$PBIN" ]]; then echo "Không tìm thấy payload.bin trong ZIP"; exit 1; fi
+            [[ -z "$PBIN" ]] && { echo "payload.bin not found in ZIP"; exit 1; }
             mv "$PBIN" payload.bin
           else
             mv rom.bin payload.bin
@@ -92,7 +99,7 @@ jobs:
             echo "[*] Dump all partitions"
             /usr/local/bin/payload-dumper-go -o out_imgs payload.bin
           fi
-          # Fallback nếu binary lỗi
+          # Fallback to Python dumper if needed
           if [ "$(ls -1 out_imgs/*.img 2>/dev/null | wc -l)" -eq 0 ]; then
             echo "[!] Fallback to Python payload-dumper"
             source ../venv/bin/activate
@@ -139,7 +146,7 @@ jobs:
               rm -rf "$EXDIR"
             else
               MP="$MOUNT_ROOT/$PART"; mkdir -p "$MP"
-              if ! sudo mount -o ro,loop "$IMG" "$MP"; then echo "  ! mount fail → skip $PART"; rmdir "$MP" || true; continue; fi
+              if ! sudo mount -o ro,loop "$IMG" "$MP"; then echo "  ! mount failed → skip $PART"; rmdir "$MP" || true; continue; fi
               for d in "${APK_DIRS[@]}"; do
                 SRC="$MP/$d"; [[ -d "$SRC" ]] || continue
                 DEST="$OUT_APK_DIR/$PART/$d"; mkdir -p "$DEST"
@@ -148,33 +155,12 @@ jobs:
               safe_umount "$MP"; rmdir "$MP" || true
             fi
           done
-
-          echo "APK count: $(find "$OUT_APK_DIR" -type f -name '*.apk' | wc -l)"
           EOF
           chmod +x scripts/apk_siphon.sh
           ./scripts/apk_siphon.sh
+          echo "APK count: $(find work/out_apks -type f -name '*.apk' | wc -l)"
 
-      - name: Pack artifacts
-        working-directory: work
-        run: |
-          set -euo pipefail
-          tar --zstd -cf out_imgs.tar.zst out_imgs
-          tar --zstd -cf out_apks.tar.zst out_apks
-          sha256sum out_imgs.tar.zst out_apks.tar.zst | tee SHA256SUMS.txt
-          ls -lah
-
-      - name: Upload artifacts (GitHub)
-        uses: actions/upload-artifact@v4
-        with:
-          name: dump_outputs
-          path: |
-            work/out_imgs.tar.zst
-            work/out_apks.tar.zst
-            work/SHA256SUMS.txt
-          compression-level: 0
-          retention-days: 7
-
-      # OneDrive upload qua rclone (dùng secrets bạn đã cấp)
+      # ---- UPLOAD ONLY THE APK FOLDER (preserving tree) ----
       - name: Setup rclone (OneDrive)
         if: ${{ secrets.RCLONE_CONF && secrets.RCLONE_DESTINATION }}
         run: |
@@ -185,45 +171,48 @@ jobs:
         env:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
 
-      - name: Upload to OneDrive
+      - name: Upload APK folder to OneDrive
         if: ${{ secrets.RCLONE_CONF && secrets.RCLONE_DESTINATION }}
         id: rclup
         working-directory: work
         run: |
           set -euo pipefail
-          # Ví dụ RCLONE_DESTINATION = onedrive:/Dump
-          BASE="${{ secrets.RCLONE_DESTINATION }}"
+          BASE="${{ secrets.RCLONE_DESTINATION }}"              # e.g. onedrive:/Dump
+          DEST_PATH_INPUT="${{ github.event.inputs.DEST_PATH }}"# e.g. dumps/oneplus/oneplus6t
           ROM_BASE="$(basename "${{ github.event.inputs.ROM_URL }}")"
           ROM_STEM="${ROM_BASE%.*}"
-          DEST="${BASE%/}/Rom/${ROM_STEM}/"
+
+          # Normalize path
+          DEST_PATH_INPUT="${DEST_PATH_INPUT#/}"    # strip leading /
+          DEST_PATH_INPUT="${DEST_PATH_INPUT%/}"    # strip trailing /
+
+          # Optionally append ROM stem
+          if [[ "${{ github.event.inputs.ADD_ROM_SUBFOLDER }}" == "true" ]]; then
+            DEST="${BASE%/}/${DEST_PATH_INPUT}/${ROM_STEM}/"
+          else
+            DEST="${BASE%/}/${DEST_PATH_INPUT}/"
+          fi
           echo "dest=$DEST" >> "$GITHUB_OUTPUT"
+
+          # Create and upload the full APK tree
           rclone mkdir "$DEST"
-          rclone copy out_imgs.tar.zst "$DEST" --transfers 8 --onedrive-chunk-size 64M || true
-          rclone copy out_apks.tar.zst "$DEST" --transfers 8 --onedrive-chunk-size 64M || true
-          rclone copy SHA256SUMS.txt "$DEST" --transfers 8 --onedrive-chunk-size 64M || true
+          rclone copy "out_apks/" "$DEST" --transfers 16 --checkers 16 --onedrive-chunk-size 64M --create-empty-src-dirs
+
+          # Optional index
+          APK_COUNT=$(find out_apks -type f -name '*.apk' | wc -l)
+          echo "APK files: $APK_COUNT" > /tmp/INDEX.txt
+          rclone copy /tmp/INDEX.txt "$DEST"
+
           echo "Uploaded to: $DEST"
 
-      - name: Generate OneDrive public link
+      - name: Public link for APK folder (best-effort)
         if: ${{ steps.rclup.outputs.dest }}
         id: link
         run: |
           set -euo pipefail
-          PUBLIC_LINK="$(rclone link --onedrive-link-type view --onedrive-link-scope anonymous "${{ steps.rclup.outputs.dest }}" 2>/dev/null || true)"
-          [ -n "$PUBLIC_LINK" ] && echo "::add-mask::$PUBLIC_LINK"
-          echo "url=${PUBLIC_LINK:-N/A}" >> "$GITHUB_OUTPUT"
-
-      - name: Telegram notify (optional)
-        if: ${{ success() && secrets.TELEGRAM_BOT_TOKEN && secrets.TELEGRAM_CHAT_ID }}
-        uses: appleboy/telegram-action@v0.1.1
-        with:
-          to: ${{ secrets.TELEGRAM_CHAT_ID }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          message: |
-            ✅ **HI** xong!
-            ROM: `${{ github.event.inputs.ROM_URL }}`
-            PARTITIONS: `${{ github.event.inputs.PARTITIONS }}`
-            OneDrive: `${{ steps.rclup.outputs.dest || 'N/A' }}`
-            Link: ${{ steps.link.outputs.url || 'N/A' }}
+          LINK="$(rclone link --onedrive-link-type view --onedrive-link-scope anonymous "${{ steps.rclup.outputs.dest }}" 2>/dev/null || true)"
+          [ -n "$LINK" ] && echo "::add-mask::$LINK"
+          echo "url=${LINK:-N/A}" >> "$GITHUB_OUTPUT"
 
       - name: Job Summary
         if: always()
@@ -231,6 +220,7 @@ jobs:
           echo "## HI Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "- ROM: \`${{ github.event.inputs.ROM_URL }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- PARTITIONS: \`${{ github.event.inputs.PARTITIONS }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- APKs: \`$(find work/out_apks -type f -name "*.apk" 2>/dev/null | wc -l)\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- OneDrive dest: \`${{ steps.rclup.outputs.dest || 'N/A' }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- DEST_PATH: \`${{ github.event.inputs.DEST_PATH }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ADD_ROM_SUBFOLDER: \`${{ github.event.inputs.ADD_ROM_SUBFOLDER }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- OneDrive APK folder: \`${{ steps.rclup.outputs.dest || 'N/A' }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Public link: \`${{ steps.link.outputs.url || 'N/A' }}\`" >> "$GITHUB_STEP_SUMMARY"
