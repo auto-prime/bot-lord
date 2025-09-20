@@ -239,7 +239,7 @@ jobs:
           fi
           echo "dest=$DEST" >> "$GITHUB_OUTPUT"
           rclone mkdir "$DEST"
-          rclone copy "out_apks/" "$DEST" --transfers 16 --checkers 16 --onedrive-chunk-size 64M --create-empty-src-dirs
+          rclone copy "out_apks/" "$DEST" --transfers 16 --checkers 16 --onedrive-chunk-size 80M --create-empty-src-dirs
           APK_COUNT=$(find out_apks -type f -name '*.apk' | wc -l || true)
           printf 'APK files: %s\n' "$APK_COUNT" > /tmp/INDEX.txt
           rclone copy /tmp/INDEX.txt "$DEST"
