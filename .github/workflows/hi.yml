@@ -157,7 +157,6 @@ jobs:
             
             EXTRACT_ROOT="" # This will be the path to the mounted/extracted filesystem root
 
-            # Handle EROFS by extracting first, as it's often faster and more reliable than FUSE
             if is_erofs "$IMG"; then
               if has extract.erofs; then
                 echo "EROFS detected. Extracting with extract.erofs..."
@@ -170,7 +169,7 @@ jobs:
                   rm -rf "$EXDIR"
                   continue
                 fi
-              elif has erofsfuse; then # Fallback to FUSE if extract.erofs is not available
+              elif has erofsfuse; then
                 echo "EROFS detected. Mounting with erofsfuse..."
                 MP="$MOUNT_ROOT/$PART"
                 mkdir -p "$MP"
@@ -185,37 +184,40 @@ jobs:
                 echo "No tool found to handle EROFS image: $PART. Skipping."
                 continue
               fi
-            else # Handle ext4/other filesystems by mounting
-              echo "ext4/raw image detected. Mounting..."
-              MP="$MOUNT_ROOT/$PART"
-              mkdir -p "$MP"
-              if sudo mount -o ro,loop "$IMG" "$MP"; then
-                EXTRACT_ROOT="$MP"
+            else
+              # Check if the file is a mountable filesystem before trying to mount
+              if file -bL "$IMG" | grep -q 'filesystem data'; then
+                echo "Mountable filesystem detected. Mounting..."
+                MP="$MOUNT_ROOT/$PART"
+                mkdir -p "$MP"
+                if sudo mount -o ro,loop "$IMG" "$MP"; then
+                  EXTRACT_ROOT="$MP"
+                else
+                  echo "mount failed for image: $PART. Skipping."
+                  rmdir "$MP" || true
+                  continue
+                fi
               else
-                echo "mount failed for image: $PART. Skipping."
-                rmdir "$MP" || true
+                echo "Image $PART is not a recognized mountable filesystem. Skipping APK extraction."
                 continue
               fi
             fi
 
             # Now, find and copy APKs from the extracted/mounted location
             if [ -n "$EXTRACT_ROOT" ]; then
-              # Find any directory named "app" or "priv-app" at any depth
               find "$EXTRACT_ROOT" -type d \( -name "app" -o -name "priv-app" \) 2>/dev/null | while read -r SRC_DIR; do
-                # Get the path relative to the extracted/mounted root
                 RELATIVE_PATH="${SRC_DIR#"$EXTRACT_ROOT/"}"
                 DEST="$OUT_APK_DIR/$PART/$RELATIVE_PATH"
                 mkdir -p "$DEST"
                 
                 echo "Copying APKs from $PART/$RELATIVE_PATH"
-                # Use rsync to copy only .apk files and the directory structure they are in
                 rsync -a --include="*/" --include="*.apk" --exclude="*" "$SRC_DIR/" "$DEST/"
               done
 
               # Cleanup after processing
-              if [[ "$EXTRACT_ROOT" == *"/_fs_tmp"* ]]; then # It was extracted
+              if [[ "$EXTRACT_ROOT" == *"/_fs_tmp"* ]]; then
                 rm -rf "$EXTRACT_ROOT"
-              else # It was mounted
+              else
                 safe_umount "$EXTRACT_ROOT"
                 rmdir "$EXTRACT_ROOT" || true
               fi
