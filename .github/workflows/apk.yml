@@ -73,10 +73,7 @@ jobs:
           python3 -m venv venv
           . venv/bin/activate
           pip install --upgrade pip wheel
-          
-          # FIX: Clone the repo first, then install from the local copy to avoid git auth issues
-          git clone https://github.com/5ec1cff/payload_dumper.git
-          pip install ./payload_dumper \
+          pip install git+https://github.com/5ec1cff/payload_dumper.git \
                       brotli zstandard pycryptodome tqdm
 
       - name: Prepare workspace
