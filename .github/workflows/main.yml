@@ -1,4 +1,4 @@
-# Workflow namename: DUMP
+ Workflow namename: DUMP
 # Allows manual triggering from the GitHub Actions UI
 on:
   workflow_dispatch:
@@ -90,7 +90,8 @@ jobs:
             # Check for EROFS magic number and extract files
             if [ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$raw_image")" = "e0f5e1e2" ]; then
               echo "EROFS filesystem detected. Extracting files to 'extracted_files' directory..."
-              if sudo extract.erofs -i "$raw_image" -o extracted_files/ -T0 -x; then
+              # Removed sudo as it can cause path issues and is not necessary
+              if extract.erofs -i "$raw_image" -o extracted_files/ -T0 -x; then
                 echo "Successfully extracted files from $partition_name."
               else
                 echo "An error occurred while extracting EROFS files from $partition_name.raw."
@@ -145,3 +146,4 @@ jobs:
             Các file đã được tải lên thư mục sau trên cloud của bạn:
             `${{ steps.rclone_upload.outputs.FINAL_DESTINATION }}`
           format: markdown
+
