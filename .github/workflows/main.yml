@@ -32,7 +32,7 @@ jobs:
     steps:
       # 1) Clean runner space using action
       - name: Clean Runner Space
-        uses: easimon/maximize-build-space@v10 # Pinned to a specific version for stability
+        uses: easimon/maximize-build-space@v10
         with:
           root-reserve-mb: 512
           swap-size-mb: 1024
@@ -40,29 +40,17 @@ jobs:
           remove-android: "true"
           remove-haskell: "true"
 
-      # 2) Install dependencies & build erofs-utils
-      - name: Install Dependencies & Build erofs-utils
+      # 2) Install dependencies
+      - name: Install Dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
-          # Install build dependencies for erofs-utils and other tools
+          # Install all necessary tools, including erofs-utils from the repository
           sudo apt-get install -y --no-install-recommends \
-            aria2 android-sdk-libsparse-utils p7zip-full python3-pip git rclone bsdmainutils \
-            liblz4-dev uuid-dev pkg-config make gcc autoconf automake libtool
-
-          # Install payload-dumper
-          pip3 install --no-cache-dir git+https://github.com/5ec1cff/payload-dumper
+            aria2 android-sdk-libsparse-utils p7zip-full python3-pip git rclone bsdmainutils erofs-utils
           
-          # Clone, build, and install the latest erofs-utils from source
-          echo "Cloning and building erofs-utils from source..."
-          git clone https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git
-          cd erofs-utils
-          ./autogen.sh
-          ./configure --prefix=/usr/local
-          make
-          sudo make install
-          sudo ldconfig
-          echo "erofs-utils installed successfully."
+          # Install payload-dumper from a reliable fork
+          pip3 install --no-cache-dir git+https://github.com/ssut/payload-dumper-go.git -U
 
       # 3) Set timezone
       - name: Set Vietnam Timezone
@@ -83,16 +71,18 @@ jobs:
         run: |
           set -euo pipefail
           echo "Partitions to dump: '${{ github.event.inputs.PARTITIONS }}'"
-          payload_dumper --out dumped_partitions --partitions "${{ github.event.inputs.PARTITIONS }}" rom.zip
+          # Using the Go version of payload dumper which is generally faster
+          payload-dumper-go -o dumped_partitions -p "${{ github.event.inputs.PARTITIONS }}" rom.zip
 
       # 6) Extract files from partition images
       - name: Extract Files from Partition Images
         run: |
+          set -euo pipefail
           mkdir -p extracted_files
+          
           is_erofs() {
-            local img="$1"
-            # Redirect stderr to /dev/null to suppress errors from non-image files
-            [ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$img" 2>/dev/null)" = "e0f5e1e2" ]
+            # Check for EROFS magic number at offset 0x400 (1024)
+            [ "$(hexdump -s 1024 -n 4 -e '1/4 "%08x"' "$1" 2>/dev/null)" = "e0f5e1e2" ]
           }
           
           echo "Starting extraction..."
@@ -103,16 +93,15 @@ jobs:
             
             if is_erofs "$img_file"; then
               echo "EROFS detected for ${partition_name}"
-              # Check for the tool at its absolute path
-              if [ -f /usr/local/bin/extract.erofs ]; then
+              # Use 'command -v' to check if extract.erofs exists in PATH
+              if command -v extract.erofs &> /dev/null; then
                 out_dir="extracted_files/${partition_name}"
                 mkdir -p "${out_dir}"
-                echo "Extracting with /usr/local/bin/extract.erofs..."
-                # Use the absolute path to call the command
-                /usr/local/bin/extract.erofs -i "$img_file" -x -o "${out_dir}"
+                echo "Extracting with extract.erofs..."
+                extract.erofs -i "$img_file" -x -o "${out_dir}"
                 echo "Extracted to ${out_dir}"
               else
-                echo "extract.erofs tool not found at /usr/local/bin/extract.erofs → copying raw image."
+                echo "extract.erofs tool not found in PATH → copying raw image."
                 cp -f "$img_file" "extracted_files/${partition_name}.img"
               fi
             else
@@ -158,8 +147,7 @@ jobs:
       # 9) Telegram notify
       - name: Send Telegram Notification
         if: success()
-        # Corrected to a valid, specific version tag
-        uses: appleboy/telegram-action@v0.1.1
+        uses: appleboy/telegram-action@v0.1.1 # Pinned to a specific version for stability
         with:
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -179,4 +167,3 @@ jobs:
           echo "- PARTITIONS: \`${{ github.event.inputs.PARTITIONS }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Uploaded to: \`${{ steps.rclone_upload.outputs.FINAL_DESTINATION }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Public link: \`${{ steps.generate_link.outputs.PUBLIC_LINK }}\`" >> "$GITHUB_STEP_SUMMARY"
-
