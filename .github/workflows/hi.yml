@@ -1,4 +1,4 @@
-name: HIon APK Dumper with Telegram Notification
+name: HI
 
 on:
   workflow_dispatch:
