@@ -7,7 +7,7 @@ on:
         description: "Direct URL to ROM (.zip) or payload.bin"
         required: true
       PARTITIONS:
-        description: "Partitions (e.g. system,product,system_ext). Empty = defaults"
+        description: "Partitions (e.g. system,product,system_ext). Empty = all"
         required: false
         default: ""
       DEST_PATH:
@@ -37,7 +37,6 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       TZ: Asia/Ho_Chi_Minh
-      APK_PARTS_DEFAULT: system,product,system_ext,vendor,odm,oem
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -108,12 +107,12 @@ jobs:
           mkdir -p out_imgs
           PARTS_INPUT="${{ github.event.inputs.PARTITIONS }}"
           if [ -z "$PARTS_INPUT" ]; then
-            PARTS="${APK_PARTS_DEFAULT}"
+            echo "[*] No partitions specified, dumping all."
+            python -m payload_dumper --out out_imgs payload.bin
           else
-            PARTS="$PARTS_INPUT"
+            echo "[*] Dumping specified partitions: $PARTS_INPUT"
+            python -m payload_dumper --out out_imgs --partitions "$PARTS_INPUT" payload.bin
           fi
-          echo "[*] Dump partitions: $PARTS"
-          python -m payload_dumper --out out_imgs --partitions "$PARTS" payload.bin
           ls -lah out_imgs
 
       - name: Extract APKs (EROFS/ext4)
@@ -259,9 +258,10 @@ jobs:
         run: |
           echo "## HI Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "- ROM: `${{ github.event.inputs.ROM_URL }}`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- PARTITIONS: `${{ github.event.inputs.PARTITIONS || env.APK_PARTS_DEFAULT }}`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- PARTITIONS: `${{ github.event.inputs.PARTITIONS || 'All (default)' }}`" >> "$GITHUB_STEP_SUMMARY"
           echo "- DEST_PATH: `${{ github.event.inputs.DEST_PATH }}`" >> "$GITHUB_STEP_SUMMARY"
           echo "- ADD_ROM_SUBFOLDER: `${{ github.event.inputs.ADD_ROM_SUBFOLDER }}`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Rclone enabled: `${{ steps.rclone_flag.outputs.has_rclone }}`" >> "$GITHUB_STEP_SUMMARY"
           echo "- OneDrive APK folder: `${{ steps.rclup.outputs.dest || 'N/A' }}`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Public link: `${{ steps.link.outputs.url || 'N/A' }}`" >> "$GITHUB_STEP_SUMMARY"
+
